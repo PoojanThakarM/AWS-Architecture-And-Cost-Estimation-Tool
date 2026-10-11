@@ -309,12 +309,42 @@ export function isEvidenceSupportingComponent(
  * provided, drops any citations that do not correspond to authentic evidence records,
  * and drops any component whose evidence does not support its claimed technology.
  */
+/**
+ * True when a free-text technology name from the model's summary lists
+ * (databases, frameworks, dependencies…) appears in the evidence corpus.
+ * Those lists feed `mapListTechnologies`, which adds AWS services — so an
+ * uncorroborated "DynamoDB" in `databases` used to add DynamoDB to the plan
+ * with no evidence check at all.
+ */
+export function isListEntryCorroborated(entry: string, corpus: string): boolean {
+  const e = entry
+    .toLowerCase()
+    .replace(/\(.*?\)/g, " ")
+    .replace(/\.js\b/g, "")
+    .replace(/\b(orm|database|db|framework|library|sdk|driver|client)\b/g, " ")
+    .trim();
+  if (!e) return false;
+  if (corpus.includes(e)) return true;
+  const tokens = e.split(/[^a-z0-9+#]+/).filter((t) => t.length >= 3);
+  return tokens.length > 0 && tokens.some((t) => corpus.includes(t));
+}
+
 export function normalizeArchitectureModel(
   model: ArchitectureModel,
-  evidenceRegister?: EvidenceRecord[]
+  evidenceRegister?: EvidenceRecord[],
+  /** Extra corroboration text (the user's description on the description path). */
+  extraCorpus?: string
 ): ArchitectureModel {
   const seenIds = new Set<string>();
   const register = evidenceRegister && evidenceRegister.length > 0 ? evidenceRegister : null;
+  const corpus = [
+    ...(register ?? []).map((r) => `${r.technology ?? ""} ${r.detail} ${r.sourcePath}`),
+    extraCorpus ?? "",
+  ]
+    .join("\n")
+    .toLowerCase();
+  const gateList = (arr: string[]) =>
+    corpus.trim().length === 0 ? arr : arr.filter((x) => isListEntryCorroborated(x, corpus));
 
   const components = model.components.reduce<ArchitectureComponent[]>((acc, c) => {
     if (seenIds.has(c.id)) return acc;
@@ -351,6 +381,17 @@ export function normalizeArchitectureModel(
 
         return false;
       });
+    } else if (extraCorpus && extraCorpus.trim().length > 0) {
+      // Description path: there is no evidence register, so a citation is
+      // accepted only if the phrase it quotes really is in the description,
+      // or the component's technology is named there.
+      const techNamed =
+        isListEntryCorroborated(c.technology, corpus) || isListEntryCorroborated(c.name, corpus);
+      evidence = evidence.filter((evStr) => {
+        const quoted = [...evStr.matchAll(/['"‘’“”]([^'"‘’“”]{3,})['"‘’“”]/g)].map((m) => m[1].toLowerCase().trim());
+        if (quoted.length > 0) return quoted.some((q) => corpus.includes(q)) || techNamed;
+        return techNamed;
+      });
     }
 
     if (evidence.length === 0) return acc;
@@ -366,13 +407,13 @@ export function normalizeArchitectureModel(
     appName: model.appName.trim(),
     description: model.description.trim(),
     components,
-    languages: dedupeStrings(model.languages),
-    frameworks: dedupeStrings(model.frameworks),
-    databases: dedupeStrings(model.databases),
+    languages: gateList(dedupeStrings(model.languages)),
+    frameworks: gateList(dedupeStrings(model.frameworks)),
+    databases: gateList(dedupeStrings(model.databases)),
     apis: dedupeStrings(model.apis),
     externalServices: dedupeStrings(model.externalServices),
-    dependencies: dedupeStrings(model.dependencies),
-    buildConfig: dedupeStrings(model.buildConfig),
+    dependencies: gateList(dedupeStrings(model.dependencies)),
+    buildConfig: gateList(dedupeStrings(model.buildConfig)),
     relationships: model.relationships.filter((r) => ids.has(r.from) && ids.has(r.to)),
   };
 }
@@ -405,7 +446,8 @@ export type ArchitectureValidationResult =
  */
 export function validateArchitectureModel(
   raw: unknown,
-  evidenceRegister?: EvidenceRecord[]
+  evidenceRegister?: EvidenceRecord[],
+  extraCorpus?: string
 ): ArchitectureValidationResult {
   const result = ArchitectureModelSchema.safeParse(raw);
   if (!result.success) {
@@ -417,7 +459,7 @@ export function validateArchitectureModel(
   }
 
   const rawComponentCount = result.data.components.length;
-  const model = normalizeArchitectureModel(result.data, evidenceRegister);
+  const model = normalizeArchitectureModel(result.data, evidenceRegister, extraCorpus);
   if (model.components.length === 0) {
     const detail =
       `all ${rawComponentCount} component(s) were dropped: none cited evidence ` +
@@ -473,8 +515,20 @@ function mapComponentToAws(
         mappings.push({ componentId: c.id, serviceId: "RDS", confidence: "high", evidence: `${ev} → RDS (PostgreSQL)`, fromPattern: false, category: "repository-evidence" });
       } else if (/mysql|mariadb/.test(tech)) {
         mappings.push({ componentId: c.id, serviceId: "RDS", confidence: "high", evidence: `${ev} → RDS (MySQL)`, fromPattern: false, category: "repository-evidence" });
+      } else if (/sql\s?server|mssql/.test(tech)) {
+        mappings.push({ componentId: c.id, serviceId: "RDS", confidence: "high", evidence: `${ev} → RDS (SQL Server)`, fromPattern: false, category: "repository-evidence" });
+      } else if (/cassandra|scylla/.test(tech)) {
+        mappings.push({ componentId: c.id, serviceId: "Keyspaces", confidence: "medium", evidence: `${ev} → Amazon Keyspaces (Cassandra-compatible)`, fromPattern: false, category: "inference" });
+      } else if (/neo4j|gremlin|graph\s?db|graph database/.test(tech)) {
+        mappings.push({ componentId: c.id, serviceId: "Neptune", confidence: "medium", evidence: `${ev} → Amazon Neptune (graph)`, fromPattern: false, category: "inference" });
+      } else if (/sqlite|firebase|firestore|supabase|planetscale|neon\b|atlas/.test(tech)) {
+        // Embedded (SQLite lives on the compute host's disk) or an external
+        // managed service — not an AWS database to provision. Mapping these
+        // to RDS invented a database server the project does not use.
       } else {
-        mappings.push({ componentId: c.id, serviceId: "RDS", confidence: "high", evidence: ev, fromPattern: false, category: "repository-evidence" });
+        // Unknown engine: a relational store is a reasonable guess, but it is
+        // a guess — never "high".
+        mappings.push({ componentId: c.id, serviceId: "RDS", confidence: "low", evidence: `${ev} (database engine not identified — RDS assumed)`, fromPattern: false, category: "inference" });
       }
       break;
 
@@ -492,6 +546,8 @@ function mapComponentToAws(
         mappings.push({ componentId: c.id, serviceId: "SNS", confidence: "high", evidence: ev, fromPattern: false, category: "repository-evidence" });
       } else if (/eventbridge|event.bus/.test(tech)) {
         mappings.push({ componentId: c.id, serviceId: "EventBridge", confidence: "high", evidence: ev, fromPattern: false, category: "repository-evidence" });
+      } else if (/rabbit|activemq|amqp/.test(tech)) {
+        mappings.push({ componentId: c.id, serviceId: "MQ", confidence: "high", evidence: `${ev} → Amazon MQ (RabbitMQ/ActiveMQ-compatible)`, fromPattern: false, category: "repository-evidence" });
       } else {
         mappings.push({ componentId: c.id, serviceId: "SQS", confidence: "high", evidence: ev, fromPattern: false, category: "repository-evidence" });
       }
@@ -506,20 +562,35 @@ function mapComponentToAws(
       break;
 
     case "auth":
-      if (/keycloak|auth0|okta|cognito|identity|oauth/.test(tech)) {
+      if (/cognito/.test(tech)) {
         mappings.push({ componentId: c.id, serviceId: "Cognito", confidence: "high", evidence: `${ev} → Amazon Cognito`, fromPattern: false, category: "repository-evidence" });
+      } else if (/keycloak|oauth|openid|oidc|identity provider|sso/.test(tech)) {
+        // A self-hosted IdP replaced by a managed one: a recommendation, not evidence.
+        mappings.push({ componentId: c.id, serviceId: "Cognito", confidence: "medium", evidence: `${ev} → Amazon Cognito as managed identity provider (alternative: keep the existing IdP on compute)`, fromPattern: false, category: "recommendation" });
+      } else if (/auth0|okta|clerk|firebase/.test(tech)) {
+        // External SaaS identity: stays external, nothing to provision on AWS.
       } else if (/secrets|vault|credentials|\bkms\b/.test(tech)) {
         mappings.push({ componentId: c.id, serviceId: "SecretsManager", confidence: "high", evidence: ev, fromPattern: false, category: "repository-evidence" });
       } else {
-        mappings.push({ componentId: c.id, serviceId: "Cognito", confidence: "high", evidence: ev, fromPattern: false, category: "repository-evidence" });
+        // In-app auth (JWT, sessions, passport, bcrypt) runs inside the app's
+        // own compute. Cognito is an option, not a requirement.
+        mappings.push({ componentId: c.id, serviceId: "Cognito", confidence: "low", evidence: `${ev} (in-app authentication detected; Cognito is optional — keeping auth in the application is equally valid)`, fromPattern: false, category: "recommendation" });
       }
       break;
 
     case "frontend":
-      mappings.push(
-        { componentId: `${c.id}-storage`, serviceId: "S3", confidence: "high", evidence: `${ev} → static assets`, fromPattern: false, category: "repository-evidence" },
-        { componentId: c.id, serviceId: "CloudFront", confidence: "high", evidence: `${ev} → CDN`, fromPattern: false, category: "deployment-requirement" }
-      );
+      if (/next|nuxt|remix|svelte\s?kit/.test(tech) && !/static\s+export|output:\s*['"]?export|\bssg\b|static site/.test(tech)) {
+        // Server-rendered meta-framework: needs a running Node.js process.
+        mappings.push(
+          { componentId: c.id, serviceId: "ECS", confidence: "medium", evidence: `${ev} → server-side rendering needs a Node.js host (alternatives: Amplify Hosting, App Runner)`, fromPattern: false, category: "inference" },
+          { componentId: `${c.id}-alb`, serviceId: "ALB", confidence: "medium", evidence: `${ev} → HTTP ingress for the SSR server`, fromPattern: false, category: "recommendation" }
+        );
+      } else {
+        mappings.push(
+          { componentId: `${c.id}-storage`, serviceId: "S3", confidence: "high", evidence: `${ev} → static assets`, fromPattern: false, category: "repository-evidence" },
+          { componentId: c.id, serviceId: "CloudFront", confidence: "high", evidence: `${ev} → CDN`, fromPattern: false, category: "deployment-requirement" }
+        );
+      }
       break;
 
     case "backend":

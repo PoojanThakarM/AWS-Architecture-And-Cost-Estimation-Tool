@@ -22,11 +22,13 @@ export function DiagramViewer({
   servicePlan,
 }: DiagramViewerProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  const [ready, setReady] = useState(false);
+  // Which diagram the iframe has acknowledged; "ready" is derived so a new
+  // diagram resets it without a synchronous setState inside the effect.
+  const [readyFor, setReadyFor] = useState<string | null>(null);
+  const ready = readyFor === diagramXml;
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   useEffect(() => {
-    setReady(false);
     const handler = (ev: MessageEvent) => {
       if (ev.source !== iframeRef.current?.contentWindow) return;
       try {
@@ -43,7 +45,7 @@ export function DiagramViewer({
               "*"
             );
           }, 200);
-          setReady(true);
+          setReadyFor(diagramXml);
         }
       } catch {
         // non-JSON messages from draw.io are expected

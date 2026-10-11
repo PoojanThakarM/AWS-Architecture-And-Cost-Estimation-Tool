@@ -60,7 +60,7 @@ export interface DiscoveredComponent {
   evidence: string[];
   confidence: "high" | "medium" | "low";
   /** Which extraction pass found this component */
-  source: "docker-compose" | "serverless-yml" | "iac" | "source-code" | "file-naming";
+  source: "docker-compose" | "serverless-yml" | "iac" | "source-code" | "file-naming" | "description";
 }
 
 // ---------------------------------------------------------------------------
@@ -258,6 +258,12 @@ export function extractTerraformResources(
 }
 
 export interface ProjectProfile {
+  /**
+   * Where the evidence came from. "description" profiles are built by
+   * descriptionAnalyzer.ts from user prose — repository-only rules (library
+   * detection, monorepo layout) must not run on them. Undefined = repository.
+   */
+  origin?: "repository" | "description";
   /** Primary programming languages detected */
   languages: DetectedTech[];
   /** Frameworks and major libraries (React, Express, Django, etc.) */
@@ -1176,7 +1182,9 @@ function extractDockerComposeComponents(
         type = "worker"; technology = "custom";
       } else if (/cron|scheduler|schedule/.test(serviceName)) {
         type = "scheduler"; technology = "custom";
-      } else if (/(?:^|[-_])(frontend|web|client|ui)(?:$|[-_])/.test(serviceName) || /frontend|client/.test(serviceName)) {
+      } else if (/(?:^|[-_])(frontend|client|ui|spa)(?:$|[-_])/.test(serviceName) || /frontend|client/.test(serviceName)) {
+        // "web" is NOT here: by docker-compose convention it is the main
+        // application server (Django/Flask/Rails/FastAPI), not a static UI.
         type = "frontend"; technology = "custom";
       } else {
         type = "backend"; technology = "custom";
@@ -1700,7 +1708,7 @@ export function analyzeProject(signals: RepoSignals): ProjectProfile {
 
   // ── Passes B+C: source-code instantiation + file-naming ─────────────────
 
-  discoveredRaw.push(...extractSourceCodeComponents(allFiles as any));
+  discoveredRaw.push(...extractSourceCodeComponents(allFiles as KeyFile[]));
 
   // Deduplicate discoveredComponents by id (first wins — IaC evidence is
   // stronger than source-code inference for the same logical component).
@@ -1879,13 +1887,23 @@ export function classifyWorkload(
   description?: string
 ): WorkloadClassification {
   const isSignals = "manifests" in dataOrSignals || "fileTree" in dataOrSignals || "keyFiles" in dataOrSignals;
-  const signals: RepoSignals = isSignals ? (dataOrSignals as RepoSignals) : (dataOrSignals as any).signals;
-  const languages: DetectedTech[] = isSignals ? [] : ((dataOrSignals as any).languages ?? []);
-  const frameworks: DetectedTech[] = isSignals ? [] : ((dataOrSignals as any).frameworks ?? []);
-  const databases: DetectedTech[] = isSignals ? [] : ((dataOrSignals as any).databases ?? []);
-  const infrastructure: DetectedTech[] = isSignals ? [] : ((dataOrSignals as any).infrastructure ?? []);
-  const discoveredComponents: DiscoveredComponent[] = isSignals ? [] : ((dataOrSignals as any).discoveredComponents ?? []);
-  const desc = (description ?? (isSignals ? "" : (dataOrSignals as any).description) ?? "").toLowerCase();
+  type ProfileLike = {
+    signals?: RepoSignals;
+    languages?: DetectedTech[];
+    frameworks?: DetectedTech[];
+    databases?: DetectedTech[];
+    infrastructure?: DetectedTech[];
+    discoveredComponents?: DiscoveredComponent[];
+    description?: string;
+  };
+  const data = (isSignals ? {} : dataOrSignals) as ProfileLike;
+  const signals: RepoSignals = isSignals ? (dataOrSignals as RepoSignals) : (data.signals as RepoSignals);
+  const languages: DetectedTech[] = data.languages ?? [];
+  const frameworks: DetectedTech[] = data.frameworks ?? [];
+  const databases: DetectedTech[] = data.databases ?? [];
+  const infrastructure: DetectedTech[] = data.infrastructure ?? [];
+  const discoveredComponents: DiscoveredComponent[] = data.discoveredComponents ?? [];
+  const desc = (description ?? data.description ?? "").toLowerCase();
 
   const reasons: string[] = [];
   const allTech = [

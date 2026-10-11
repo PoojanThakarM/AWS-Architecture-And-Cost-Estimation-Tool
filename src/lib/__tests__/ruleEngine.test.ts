@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import { runRuleEngine } from "../ruleEngine.ts";
 import type { RuleInput } from "../ruleEngine.ts";
 import { SERVICE_IDS, ServicePlanSchema } from "../schema.ts";
+import type { ServiceId } from "../schema.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -163,7 +164,7 @@ describe("runRuleEngine — always produces a valid ServicePlan", () => {
       deploymentModel: [],
       awsMappings: [{
         componentId: "c1",
-        serviceId: "FakeAwsCloudDatabase" as any,
+        serviceId: "FakeAwsCloudDatabase" as unknown as ServiceId,
         confidence: "high" as const,
         evidence: "test",
         fromPattern: false,
@@ -363,9 +364,12 @@ describe("runRuleEngine — service detection", () => {
 });
 
 describe("Fix 10 — terminal states", () => {
-  it("empty input resolves to LIBRARY_REPO", () => {
+  it("empty description input resolves to INSUFFICIENT_SIGNAL (not LIBRARY_REPO)", () => {
+    // Changed in the 2026-10 audit: an empty *description* is not a library
+    // repository. INSUFFICIENT_SIGNAL is the state that tells the user to add
+    // detail; LIBRARY_REPO remains for repositories (see the IaC/library tests).
     const plan = runRuleEngine(makeInput());
-    assert.strictEqual(plan.terminalState, "LIBRARY_REPO");
+    assert.strictEqual(plan.terminalState, "INSUFFICIENT_SIGNAL");
   });
 
   it("IaC-only profile resolves to IAC_ONLY", () => {

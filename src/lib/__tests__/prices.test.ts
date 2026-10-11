@@ -12,6 +12,7 @@
  * Run: node --experimental-strip-types --test src/lib/__tests__/prices.test.ts
  */
 
+import type { PricingClient } from "@aws-sdk/client-pricing";
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -26,7 +27,7 @@ import {
   REGION_USAGE_PREFIX,
 } from "../prices.ts";
 import { computeCostRows, scaleCostRows } from "../cost.ts";
-import type { ServicePlan } from "../schema.ts";
+import type { ServicePlan, ServiceId } from "../schema.ts";
 
 // ---------------------------------------------------------------------------
 // Test Plan Fixture
@@ -83,14 +84,19 @@ describe("PriceService — Configuration & Fallback Constants", () => {
   });
 
   it("preserves exact FALLBACK_PRICES values and coverage", () => {
-    assert.equal(FALLBACK_PRICES.EC2, 0.023);
+    // Updated in the 2026-10 audit (see docs/BUG_FIX_REPORT.md):
+    //   EC2 0.023 → 0.0208      (0.023 is t2.small; t3.small Linux is $0.0208/h)
+    //   DynamoDB 2.5e-7 → 1.25e-7 (on-demand reads halved on 2024-11-01)
+    //   CloudFront 0.0085 → 0.085 ($0.085/GB US first-10-TB; old value 10× low)
+    //   APIGateway 3.50 → 1.00   (HTTP API, matching the ApiGatewayV2 CFN export)
+    assert.equal(FALLBACK_PRICES.EC2, 0.0208);
     assert.equal(FALLBACK_PRICES.Lambda, 0.0000166667);
     assert.equal(FALLBACK_PRICES.S3, 0.023);
     assert.equal(FALLBACK_PRICES.RDS, 0.017);
-    assert.equal(FALLBACK_PRICES.DynamoDB, 0.00000025);
+    assert.equal(FALLBACK_PRICES.DynamoDB, 0.000000125);
     assert.equal(FALLBACK_PRICES.ECS, 0.04048);
-    assert.equal(FALLBACK_PRICES.CloudFront, 0.0085);
-    assert.equal(FALLBACK_PRICES.APIGateway, 3.50);
+    assert.equal(FALLBACK_PRICES.CloudFront, 0.085);
+    assert.equal(FALLBACK_PRICES.APIGateway, 1.00);
     assert.equal(FALLBACK_PRICES.SQS, 0.40);
     assert.equal(FALLBACK_PRICES.SNS, 0.50);
 
@@ -166,7 +172,7 @@ describe("PriceService — SDK Path (@aws-sdk/client-pricing)", () => {
         err.name = "UnrecognizedClientException";
         throw err;
       },
-    } as any;
+    } as unknown as PricingClient;
 
     setPricingClient(failingClient);
 
@@ -235,7 +241,7 @@ describe("PriceService — SDK Path (@aws-sdk/client-pricing)", () => {
 
   it("returns live price with source='live' when SDK client succeeds", async () => {
     const mockClient = {
-      send: async (cmd: any) => {
+      send: async (cmd: { input: { ServiceCode?: string; Filters?: unknown[] } }) => {
         return {
           PriceList: [
             JSON.stringify({
@@ -261,7 +267,7 @@ describe("PriceService — SDK Path (@aws-sdk/client-pricing)", () => {
           ],
         };
       },
-    } as any;
+    } as unknown as PricingClient;
 
     setPricingClient(mockClient);
 
@@ -278,7 +284,7 @@ describe("PriceService — SDK Path (@aws-sdk/client-pricing)", () => {
   it("falls back to FALLBACK_PRICES when SDK returns empty PriceList", async () => {
     const mockClient = {
       send: async () => ({ PriceList: [] }),
-    } as any;
+    } as unknown as PricingClient;
 
     setPricingClient(mockClient);
 
@@ -305,7 +311,8 @@ describe("CostService — Integration & Shape Stability", () => {
 
     assert.equal(result.region, "us-east-1");
     assert.equal(result.userCount, 10_000);
-    assert.equal(result.rows.length, 3);
+    // 3 services → 5 billing lines: Lambda (GB-s + requests), S3, DynamoDB (reads + writes).
+    assert.equal(result.rows.length, 5);
     assert.equal(result.priceSourceMode, "bulk");
 
     for (const row of result.rows) {
@@ -322,7 +329,7 @@ describe("CostService — Integration & Shape Stability", () => {
     process.env.PRICE_SOURCE = "sdk";
 
     const mockClient = {
-      send: async (cmd: any) => {
+      send: async (cmd: { input: { ServiceCode?: string; Filters?: unknown[] } }) => {
         const filters = cmd.input.Filters || [];
         const isS3 = cmd.input.ServiceCode === "AmazonS3";
         const price = isS3 ? "0.025" : "0.00002";
@@ -339,7 +346,7 @@ describe("CostService — Integration & Shape Stability", () => {
           ],
         };
       },
-    } as any;
+    } as unknown as PricingClient;
 
     setPricingClient(mockClient);
 
@@ -347,7 +354,7 @@ describe("CostService — Integration & Shape Stability", () => {
     const result = await computeCostRows(plan, "us-east-1", 10_000, "sdk");
 
     assert.equal(result.priceSourceMode, "sdk");
-    assert.equal(result.rows.length, 3);
+    assert.equal(result.rows.length, 5);
 
     const s3Row = result.rows.find((r) => r.serviceId === "S3");
     assert.ok(s3Row);
@@ -378,7 +385,7 @@ describe("CostService — Integration & Shape Stability", () => {
         { id: "c-custom", type: "backend", technology: "CustomService", evidence: ["custom"], confidence: "high", status: "detected" },
       ],
       awsMappings: [
-        { componentId: "c-custom", serviceId: "CustomService" as any, confidence: "high", evidence: "custom", fromPattern: false },
+        { componentId: "c-custom", serviceId: "CustomService" as unknown as ServiceId, confidence: "high", evidence: "custom", fromPattern: false },
       ],
     };
 

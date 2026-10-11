@@ -22,8 +22,8 @@ AI architecture advisor: repo URL or freeform description → validated
      confidence to `low` (Decision 19).
    - Optional curated second proposal via `patternAlternates.ts`
      (hand-written pairs only, never score proximity).
-3. **Diagram** — `src/lib/diagram.ts` (pure function, has pre-existing
-   `tsc` errors; out of scope, do not touch).
+3. **Diagram** — `src/lib/diagram.ts` (pure function; `tsc` is clean since the
+   2026-10 audit — keep it that way).
 4. **Cost** — `src/lib/prices.ts` + `src/lib/cost.ts` + `SERVICE_DEFAULTS.ts`
    (defaults carry disclosed sources, never derived from repo content).
 
@@ -42,7 +42,7 @@ AI architecture advisor: repo URL or freeform description → validated
 
 ## Commands
 
-- `npm test` — full unit suite (currently 278/278).
+- `npm test` — full unit suite (currently 353/353).
 - `npm run test:baseline -- --rules-only` — 8-repo rules diagnostic.
 - Merged-column diagnostic requires an LLM key; without one the script
   hard-fails by design rather than silently re-measuring rules.

@@ -450,8 +450,11 @@ functions:
     name: "astro-docs-static",
     language: "Astro",
     expectedWorkload: "static-frontend",
-    expectedServices: ["S3", "CloudFront", "Route53"],
-    forbiddenServices: ["ECS", "EKS", "ECR", "RDS", "DynamoDB", "ALB"],
+    // Route53 removed from the expected set (2026-10 audit): the fixture has
+    // no custom-domain evidence, and a static site is reachable on its
+    // CloudFront domain. Route53 is now added only with domain evidence.
+    expectedServices: ["S3", "CloudFront"],
+    forbiddenServices: ["ECS", "EKS", "ECR", "RDS", "DynamoDB", "ALB", "Route53"],
     signals: makeSignals("acme/developer-docs", [
       {
         path: "package.json",

@@ -555,7 +555,9 @@ describe("Hardening: Global Deduplication of Logical AWS Services", () => {
   it("mapArchitectureModelToServicePlan produces exactly one CloudFront for full-stack apps", () => {
     const model = makeModel({
       components: [
-        comp("web", "Frontend", "frontend", "React Next.js", "high", ["ev-1"]),
+        // React SPA (static build). A *server-rendered* Next.js frontend now
+        // maps to compute instead — see the Next.js SSR regression test.
+        comp("web", "Frontend", "frontend", "React", "high", ["ev-1"]),
         comp("api", "Backend", "backend", "Express", "high", ["ev-2"]),
       ],
     });
@@ -640,8 +642,14 @@ describe("Hardening: Benchmark Repo 1 (Kuzma02 Electronics eCommerce)", () => {
     const serviceIds = plan.awsMappings.map((m) => m.serviceId);
 
     // 1. Deduplication checks
+    // Next.js 15 App Router renders on a server unless configured for static
+    // export, so the frontend needs compute (ECS), not S3 static hosting. The
+    // original expectation (exactly one CloudFront) encoded the static-hosting
+    // defect; the dedup intent is kept as "at most one".
     const cloudFrontCount = plan.awsMappings.filter((m) => m.serviceId === "CloudFront").length;
-    assert.strictEqual(cloudFrontCount, 1, `CloudFront must appear exactly once; count = ${cloudFrontCount}`);
+    assert.ok(cloudFrontCount <= 1, `CloudFront must not be duplicated; count = ${cloudFrontCount}`);
+    const ecsMappings = plan.awsMappings.filter((m) => m.serviceId === "ECS");
+    assert.strictEqual(ecsMappings.length, 1, "SSR frontend + API share one deduplicated ECS mapping");
 
     const s3Count = plan.awsMappings.filter((m) => m.serviceId === "S3").length;
     assert.strictEqual(s3Count, 1, `S3 must appear exactly once; count = ${s3Count}`);

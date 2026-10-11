@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import type { Grounding, ServicePlan } from "@/lib/schema";
+import type { Diagnostic, Grounding, PipelineEngine, ServicePlan } from "@/lib/schema";
 import {
   AlertTriangle,
   Info,
@@ -11,7 +11,73 @@ import {
   Sparkles,
   FileCheck2,
   FileCode,
+  Cpu,
 } from "lucide-react";
+
+/**
+ * Shows which inference path produced the result. Before this existed the
+ * API returned `engine` but the UI never displayed it, so an LLM outage
+ * looked identical to a successful AI analysis.
+ */
+export function EngineBanner({
+  engine,
+  diagnostics,
+}: {
+  engine?: PipelineEngine;
+  diagnostics?: Diagnostic[];
+}) {
+  const [open, setOpen] = useState(false);
+  if (!engine) return null;
+  const variants: Record<PipelineEngine, { title: string; body: string; cls: string }> = {
+    llm: {
+      title: "Mode: AI-enhanced",
+      body: "An AI model described the application from the evidence; AWS services were then selected by the deterministic rules.",
+      cls: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300",
+    },
+    rules: {
+      title: "Mode: Rules-only",
+      body: "No AI provider is configured. Services were selected by the deterministic rule engine from the detected evidence.",
+      cls: "border-sky-500/30 bg-sky-500/10 text-sky-300",
+    },
+    "rules-fallback": {
+      title: "Mode: AI failed — rules baseline used",
+      body: "An AI provider is configured but did not return a usable result for this request, so the deterministic rule engine answered instead.",
+      cls: "border-amber-500/30 bg-amber-500/10 text-amber-300",
+    },
+  };
+  const v = variants[engine];
+  const shown = (diagnostics ?? []).filter((d) => d.severity !== "info" || engine !== "rules");
+  return (
+    <div className={`mb-6 rounded-2xl border p-4 text-xs backdrop-blur-md ${v.cls}`} data-testid="engine-banner" data-engine={engine}>
+      <div className="flex items-start gap-3">
+        <Cpu className="h-4 w-4 shrink-0 mt-0.5" />
+        <div className="flex-1">
+          <span className="font-semibold">{v.title}</span>
+          <p className="mt-0.5 opacity-80">{v.body}</p>
+          {shown.length > 0 && (
+            <button
+              className="mt-2 inline-flex items-center gap-1 underline underline-offset-2 opacity-90"
+              onClick={() => setOpen((o) => !o)}
+              aria-expanded={open}
+            >
+              {open ? "Hide" : "Show"} pipeline diagnostics ({shown.length})
+            </button>
+          )}
+          {open && (
+            <ul className="mt-2 space-y-1 font-mono text-[11px] opacity-90">
+              {shown.map((d, i) => (
+                <li key={`${d.code}-${i}`}>
+                  [{d.severity}] {d.stage}/{d.code}: {d.message}
+                  {d.detail ? ` — ${d.detail}` : ""}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export function GroundingBanner({ grounding }: { grounding: Grounding }) {
   if (grounding === "repo" || grounding === "repoFiles") {

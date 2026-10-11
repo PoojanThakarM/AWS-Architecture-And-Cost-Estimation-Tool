@@ -33,6 +33,38 @@ export interface ServiceDefault {
   usageTypePrefix: string | null;
   /** Short annotation explaining the quantity choice. Shown in UI. */
   annotation: string;
+  /**
+   * What `unitPrice` is per, in the SAME unit as `baseQuantity`
+   * (e.g. "per GB-second", "per million requests"). Shown next to the price
+   * so a unit mismatch is visible instead of silently wrong.
+   */
+  priceUnit?: string;
+  /**
+   * Converts a live AWS Price List unit price into this row's unit. The Price
+   * List quotes request-based services per single request, while these rows
+   * count millions — without this factor a live lookup made 5M API calls cost
+   * $0.0000175 instead of $5.
+   */
+  livePriceMultiplier?: number;
+  /** Extra product attributes a live price-list SKU must match (engine, OS…). */
+  attributeFilters?: Record<string, string>;
+  /**
+   * Monthly free allowance in this row's units, subtracted before pricing and
+   * re-applied when the client rescales the user count.
+   */
+  freeTierQuantity?: number;
+  /** Additional billable dimensions of the same service (requests, memory, storage). */
+  extraLines?: ServiceLine[];
+  /** Significant costs this baseline deliberately leaves out. Shown in UI. */
+  excludes?: string;
+}
+
+/** A secondary billing dimension of a service (Lambda requests, Fargate memory…). */
+export interface ServiceLine extends Omit<ServiceDefault, "extraLines"> {
+  /** Stable id; the fallback price is looked up as `${serviceId}:${lineId}`. */
+  lineId: string;
+  /** Does NOT scale with user count (provisioned capacity). */
+  fixed?: boolean;
 }
 
 export const SERVICE_DEFAULTS: Record<string, ServiceDefault> = {
@@ -42,14 +74,33 @@ export const SERVICE_DEFAULTS: Record<string, ServiceDefault> = {
     baseQuantity: 720, // 1 × t3.small running 24/7
     serviceCode: "AmazonEC2",
     usageTypePrefix: "BoxUsage:t3.small",
-    annotation: "1 t3.small instance × 720 h/mo; source: EC2 On-Demand pricing page",
+    annotation: "1 t3.small Linux instance × 720 h/mo; source: EC2 On-Demand pricing page",
+    priceUnit: "per instance-hour",
+    attributeFilters: { operatingSystem: "Linux", tenancy: "Shared", preInstalledSw: "NA", capacitystatus: "Used" },
+    excludes: "EBS root volume, data transfer",
   },
   Lambda: {
     unitLabel: "GB-seconds/mo",
-    baseQuantity: 5_000_000, // 5M req × 200ms × 512 MB = 500k GB-s; free tier covers 400k
+    // 5,000,000 requests × 0.2 s × 0.5 GB = 500,000 GB-seconds.
+    // (Was 5,000,000 — the request count — which overstated compute 10×.)
+    baseQuantity: 500_000,
     serviceCode: "AWSLambda",
     usageTypePrefix: "Lambda-GB-Second",
-    annotation: "5M requests × 200 ms avg × 512 MB; source: Lambda pricing page",
+    annotation: "5M requests × 200 ms avg × 512 MB = 500k GB-s; source: Lambda pricing page",
+    priceUnit: "per GB-second",
+    excludes: "free tier (400k GB-s + 1M requests/mo) not applied",
+    extraLines: [
+      {
+        lineId: "requests",
+        unitLabel: "requests (millions)/mo",
+        baseQuantity: 5,
+        serviceCode: "AWSLambda",
+        usageTypePrefix: "Request",
+        annotation: "5M invocations; source: Lambda pricing page",
+        priceUnit: "per million requests",
+        livePriceMultiplier: 1_000_000,
+      },
+    ],
   },
   ECS: {
     unitLabel: "vCPU-hours/mo (Fargate pricing)",
@@ -57,13 +108,28 @@ export const SERVICE_DEFAULTS: Record<string, ServiceDefault> = {
     serviceCode: "AmazonECS",
     usageTypePrefix: "Fargate-vCPU-Hours:perCPU",
     annotation: "2 Fargate tasks × 0.5 vCPU × 720 h; source: Fargate pricing page",
+    priceUnit: "per vCPU-hour",
+    extraLines: [
+      {
+        lineId: "memory",
+        unitLabel: "GB-hours/mo (Fargate memory)",
+        baseQuantity: 1_440, // 2 tasks × 1 GB × 720 h
+        serviceCode: "AmazonECS",
+        usageTypePrefix: "Fargate-GB-Hours",
+        annotation: "2 Fargate tasks × 1 GB × 720 h; source: Fargate pricing page",
+        priceUnit: "per GB-hour",
+        fixed: true,
+      },
+    ],
   },
   EKS: {
-    unitLabel: "cluster-hours/mo",
-    baseQuantity: 720, // 1 cluster × 720 h ($0.10/h)
+    unitLabel: "cluster-hours/mo (control plane)",
+    baseQuantity: 720, // 1 cluster × 720 h
     serviceCode: "AmazonEKS",
     usageTypePrefix: "AmazonEKS-Hours:perHour",
-    annotation: "1 EKS cluster × 720 h at $0.10/h; source: EKS pricing page",
+    annotation: "1 EKS control plane × 720 h; source: EKS pricing page",
+    priceUnit: "per cluster-hour",
+    excludes: "worker nodes (EC2 or Fargate) are billed separately and NOT included",
   },
   Fargate: {
     unitLabel: "vCPU-hours/mo",
@@ -71,6 +137,19 @@ export const SERVICE_DEFAULTS: Record<string, ServiceDefault> = {
     serviceCode: "AmazonECS",
     usageTypePrefix: "Fargate-vCPU-Hours:perCPU",
     annotation: "2 Fargate tasks × 0.5 vCPU × 720 h; source: Fargate pricing page",
+    priceUnit: "per vCPU-hour",
+    extraLines: [
+      {
+        lineId: "memory",
+        unitLabel: "GB-hours/mo (Fargate memory)",
+        baseQuantity: 1_440,
+        serviceCode: "AmazonECS",
+        usageTypePrefix: "Fargate-GB-Hours",
+        annotation: "2 Fargate tasks × 1 GB × 720 h; source: Fargate pricing page",
+        priceUnit: "per GB-hour",
+        fixed: true,
+      },
+    ],
   },
   Lightsail: {
     unitLabel: "instance-months",
@@ -84,7 +163,8 @@ export const SERVICE_DEFAULTS: Record<string, ServiceDefault> = {
     baseQuantity: 100,
     serviceCode: "AWSBatch",
     usageTypePrefix: "Batch-vCPU-Hours",
-    annotation: "Spot-priced EC2 batch jobs; source: AWS Batch pricing page",
+    annotation: "100 vCPU-hours of job compute priced at the Fargate on-demand rate (AWS Batch itself has no charge)",
+    priceUnit: "per vCPU-hour",
   },
 
   // ── Storage ─────────────────────────────────────────────────────────────
@@ -123,14 +203,43 @@ export const SERVICE_DEFAULTS: Record<string, ServiceDefault> = {
     baseQuantity: 720,
     serviceCode: "AmazonRDS",
     usageTypePrefix: "InstanceUsage:db.t3.micro",
-    annotation: "1 db.t3.micro MySQL instance × 720 h; source: RDS pricing page",
+    annotation: "1 db.t3.micro MySQL instance × 720 h, Single-AZ; source: RDS pricing page",
+    priceUnit: "per instance-hour",
+    attributeFilters: { deploymentOption: "Single-AZ" },
+    excludes: "Multi-AZ standby, backups beyond the free allowance, data transfer",
+    extraLines: [
+      {
+        lineId: "storage",
+        unitLabel: "GB-months (gp2 storage)",
+        baseQuantity: 20,
+        serviceCode: "AmazonRDS",
+        usageTypePrefix: "RDS:GP2-Storage",
+        annotation: "20 GB General Purpose (gp2) storage; source: RDS pricing page",
+        priceUnit: "per GB-month",
+        attributeFilters: { deploymentOption: "Single-AZ" },
+        fixed: true,
+      },
+    ],
   },
   DynamoDB: {
-    unitLabel: "RCU-hours/mo (On-Demand)",
+    unitLabel: "read request units/mo (on-demand)",
     baseQuantity: 1_000_000, // 1M reads
     serviceCode: "AmazonDynamoDB",
     usageTypePrefix: "ReadRequestUnits",
-    annotation: "1M read request units on-demand; source: DynamoDB pricing page",
+    annotation: "1M on-demand read request units; source: DynamoDB pricing page",
+    priceUnit: "per read request unit",
+    excludes: "table storage (first 25 GB free), backups",
+    extraLines: [
+      {
+        lineId: "writes",
+        unitLabel: "write request units/mo (on-demand)",
+        baseQuantity: 250_000,
+        serviceCode: "AmazonDynamoDB",
+        usageTypePrefix: "WriteRequestUnits",
+        annotation: "250k on-demand write request units; source: DynamoDB pricing page",
+        priceUnit: "per write request unit",
+      },
+    ],
   },
   ElastiCache: {
     unitLabel: "node-hours/mo (cache.t3.micro)",
@@ -138,6 +247,7 @@ export const SERVICE_DEFAULTS: Record<string, ServiceDefault> = {
     serviceCode: "AmazonElastiCache",
     usageTypePrefix: "NodeUsage:cache.t3.micro",
     annotation: "1 cache.t3.micro node × 720 h; source: ElastiCache pricing page",
+    priceUnit: "per node-hour",
   },
   Aurora: {
     unitLabel: "ACU-hours/mo (Aurora Serverless v2)",
@@ -145,6 +255,8 @@ export const SERVICE_DEFAULTS: Record<string, ServiceDefault> = {
     serviceCode: "AmazonRDS",
     usageTypePrefix: "Aurora:ServerlessV2Usage",
     annotation: "1 ACU avg × 720 h Aurora Serverless v2; source: Aurora pricing page",
+    priceUnit: "per ACU-hour",
+    excludes: "cluster storage and I/O",
   },
   Redshift: {
     unitLabel: "node-hours/mo (dc2.large)",
@@ -167,14 +279,21 @@ export const SERVICE_DEFAULTS: Record<string, ServiceDefault> = {
     baseQuantity: 100, // 100 GB egress via CF
     serviceCode: "AmazonCloudFront",
     usageTypePrefix: "US-DataTransfer-Out-Bytes",
-    annotation: "100 GB CDN egress; source: CloudFront pricing page",
+    annotation: "100 GB CDN egress at the United States rate; source: CloudFront pricing page",
+    priceUnit: "per GB",
+    excludes: "HTTP request charges; always-free 1 TB/mo allowance not applied",
   },
   APIGateway: {
-    unitLabel: "API calls (millions)/mo",
+    // Priced as an HTTP API because cftExport.ts provisions AWS::ApiGatewayV2
+    // (HTTP API). It was priced as a REST API ($3.50/M) while the template
+    // created an HTTP API — the estimate and the export disagreed.
+    unitLabel: "HTTP API calls (millions)/mo",
     baseQuantity: 5, // 5M API calls
     serviceCode: "AmazonApiGateway",
-    usageTypePrefix: "ApiGatewayRequest",
-    annotation: "5M REST API calls; source: API Gateway pricing page",
+    usageTypePrefix: "ApiGatewayHttpRequest",
+    annotation: "5M HTTP API calls; source: API Gateway pricing page",
+    priceUnit: "per million requests",
+    livePriceMultiplier: 1_000_000,
   },
   ALB: {
     unitLabel: "ALB-hours/mo",
@@ -182,6 +301,9 @@ export const SERVICE_DEFAULTS: Record<string, ServiceDefault> = {
     serviceCode: "AWSElasticLoadBalancing",
     usageTypePrefix: "LoadBalancerUsage",
     annotation: "1 ALB × 720 h; source: ELB pricing page",
+    priceUnit: "per ALB-hour",
+    attributeFilters: { productFamily: "Load Balancer-Application" },
+    excludes: "LCU (traffic) charges",
   },
   Route53: {
     unitLabel: "hosted zones/mo",
@@ -190,19 +312,17 @@ export const SERVICE_DEFAULTS: Record<string, ServiceDefault> = {
     usageTypePrefix: "HostedZone",
     annotation: "1 hosted zone at $0.50/mo; source: Route 53 pricing page",
   },
-  VPC: {
-    unitLabel: "VPC endpoints/mo",
-    baseQuantity: 1,
-    serviceCode: "AmazonVPC",
-    usageTypePrefix: "VpcEndpoint-Hours",
-    annotation: "1 VPC endpoint × 720 h; source: VPC pricing page",
-  },
+  // VPC intentionally has no entry: a VPC itself is free. The old entry priced
+  // "1 VPC endpoint" at a per-HOUR rate × quantity 1 ($0.01/mo) — neither a
+  // VPC nor a real endpoint cost. It is now listed as a no-charge service.
   NATGateway: {
     unitLabel: "NAT Gateway-hours/mo",
     baseQuantity: 720,
     serviceCode: "AmazonVPC",
     usageTypePrefix: "NatGateway-Hours",
     annotation: "1 NAT Gateway × 720 h; source: VPC pricing page",
+    priceUnit: "per NAT Gateway-hour",
+    excludes: "per-GB data processing",
   },
 
   // ── Messaging / Async ────────────────────────────────────────────────────
@@ -210,22 +330,30 @@ export const SERVICE_DEFAULTS: Record<string, ServiceDefault> = {
     unitLabel: "requests (millions)/mo",
     baseQuantity: 1, // 1M messages
     serviceCode: "AWSQueueService",
-    usageTypePrefix: "Request",
-    annotation: "1M SQS requests; source: SQS pricing page (first 1M free)",
+    usageTypePrefix: "Requests-Tier1",
+    annotation: "1M standard-queue requests; source: SQS pricing page",
+    priceUnit: "per million requests",
+    livePriceMultiplier: 1_000_000,
+    excludes: "always-free first 1M requests/mo not applied",
   },
   SNS: {
-    unitLabel: "notifications (millions)/mo",
+    unitLabel: "publishes (millions)/mo",
     baseQuantity: 1,
     serviceCode: "AmazonSNS",
     usageTypePrefix: "Requests-Tier1",
     annotation: "1M SNS publishes; source: SNS pricing page",
+    priceUnit: "per million requests",
+    livePriceMultiplier: 1_000_000,
+    excludes: "delivery charges (SMS, email, HTTP)",
   },
   EventBridge: {
-    unitLabel: "events (millions)/mo",
+    unitLabel: "custom events (millions)/mo",
     baseQuantity: 1,
-    serviceCode: "AmazonEventBridge",
-    usageTypePrefix: "Events",
-    annotation: "1M EventBridge events; source: EventBridge pricing page",
+    serviceCode: "AWSEvents",
+    usageTypePrefix: "Event",
+    annotation: "1M custom events published; source: EventBridge pricing page",
+    priceUnit: "per million events",
+    livePriceMultiplier: 1_000_000,
   },
   Kinesis: {
     unitLabel: "shard-hours/mo",
@@ -233,31 +361,55 @@ export const SERVICE_DEFAULTS: Record<string, ServiceDefault> = {
     serviceCode: "AmazonKinesis",
     usageTypePrefix: "ShardHour",
     annotation: "1 Kinesis shard × 720 h; source: Kinesis pricing page",
+    priceUnit: "per shard-hour",
+    excludes: "PUT payload units",
   },
   MSK: {
     unitLabel: "broker-hours/mo (kafka.m5.large)",
-    baseQuantity: 720,
+    // MSK needs at least 2 brokers (one per AZ). The annotation said 2 while
+    // the quantity priced 1.
+    baseQuantity: 1_440,
     serviceCode: "AmazonMSK",
     usageTypePrefix: "Kafka.m5.large",
     annotation: "2 kafka.m5.large brokers × 720 h; source: MSK pricing page",
+    priceUnit: "per broker-hour",
+    excludes: "broker storage",
   },
 
   // ── Auth / Identity ──────────────────────────────────────────────────────
   Cognito: {
-    unitLabel: "billable MAU past free tier",
+    unitLabel: "monthly active users (billable past free tier)",
     baseQuantity: 10_000,
     serviceCode: "AmazonCognito",
     usageTypePrefix: "CognitoUserPool",
-    annotation: "10k MAU; first 50k free in Cognito User Pools",
+    // New user pools (since 2024-11-22) get 10,000 free MAU on the Lite and
+    // Essentials tiers; pools created earlier keep the legacy 50,000.
+    freeTierQuantity: 10_000,
+    annotation: "MAU = user count; first 10k MAU free (new user pools, Lite/Essentials tiers); priced at the Lite rate",
+    priceUnit: "per MAU",
+    excludes: "Essentials/Plus tier premiums, SAML/OIDC federation MAU",
   },
 
   // ── DevOps / Observability ───────────────────────────────────────────────
   CloudWatch: {
-    unitLabel: "metrics/mo + 5 GB logs",
+    unitLabel: "custom metrics/mo",
     baseQuantity: 10, // 10 custom metrics
     serviceCode: "AmazonCloudWatch",
     usageTypePrefix: "MetricMonitorUsage",
-    annotation: "10 custom metrics + 5 GB log ingestion; source: CloudWatch pricing page",
+    annotation: "10 custom metrics; source: CloudWatch pricing page",
+    priceUnit: "per metric-month",
+    extraLines: [
+      {
+        lineId: "logs",
+        unitLabel: "GB log ingestion/mo",
+        baseQuantity: 5,
+        serviceCode: "AmazonCloudWatch",
+        usageTypePrefix: "DataProcessing-Bytes",
+        annotation: "5 GB log ingestion at 10k users (scales with traffic); source: CloudWatch Logs pricing page",
+        priceUnit: "per GB ingested",
+        fixed: false,
+      },
+    ],
   },
   CloudWatchLogs: {
     unitLabel: "GB ingested/mo",
@@ -318,13 +470,17 @@ export const SERVICE_DEFAULTS: Record<string, ServiceDefault> = {
     serviceCode: "AWSSecretsManager",
     usageTypePrefix: "Secrets",
     annotation: "3 active secrets (JWT keys, DB credentials, API tokens); source: Secrets Manager pricing",
+    priceUnit: "per secret-month",
+    excludes: "API call charges",
   },
   WAF: {
-    unitLabel: "web ACL + rules/mo",
+    unitLabel: "web ACLs/mo",
     baseQuantity: 1,
     serviceCode: "awswaf",
     usageTypePrefix: "WAF-WebACL",
-    annotation: "1 Web ACL with standard managed rule groups; source: WAF pricing page",
+    annotation: "1 Web ACL; source: WAF pricing page",
+    priceUnit: "per web ACL-month",
+    excludes: "per-rule ($/rule-month) and per-request charges",
   },
   CloudFormation: {
     unitLabel: "handler operations/mo",
@@ -362,6 +518,8 @@ export const FIXED_COST_SERVICES: ReadonlySet<string> = new Set([
   "EC2", "ECS", "Fargate", "EKS", "Lightsail",
   "RDS", "Aurora", "ElastiCache", "Redshift", "DocumentDB", "OpenSearch",
   "ALB", "NATGateway", "VPC", "Route53", "Kinesis", "MSK",
+  // Custom-metric count depends on the application, not on its user count.
+  "CloudWatch",
   "WAF", "SecretsManager", "CodePipeline", "CloudFormation",
 ]);
 

@@ -29,6 +29,7 @@ import type {
   AwsServiceMapping,
   ComponentRelationship,
 } from "./schema.ts";
+import { SERVICE_CATEGORIES } from "./schema.ts";
 import type { SdkEvidence } from "./repoFetcher.ts";
 
 // ---------------------------------------------------------------------------
@@ -280,7 +281,7 @@ export interface Rect {
 
 export type Tier = "edge" | "vpc_public" | "vpc_compute" | "vpc_data" | "cross_cutting" | "external";
 
-export const SERVICE_TIERS: Record<ServiceId, Tier> = {
+export const SERVICE_TIERS: Partial<Record<ServiceId, Tier>> = {
   // Edge / public entry points (top banner)
   Route53: "edge",
   CloudFront: "edge",
@@ -329,6 +330,46 @@ export const SERVICE_TIERS: Record<ServiceId, Tier> = {
   SES: "external",
   Amplify: "external",
 };
+
+const NETWORK_EDGE: ReadonlySet<string> = new Set(["NLB", "GLB", "GlobalAccelerator", "AppSync", "Shield"]);
+
+/**
+ * Tier for any catalogued service. SERVICE_TIERS covers ~45 of the 155
+ * catalog entries; everything else used to fall into the private data subnet
+ * ("?? 'vpc_data'"), so e.g. Bedrock, KMS or App Runner were drawn as if they
+ * were databases inside the VPC. Unlisted services are now placed by their
+ * catalog category.
+ */
+export function tierOf(serviceId: ServiceId | string): Tier {
+  const explicit = SERVICE_TIERS[serviceId as ServiceId];
+  if (explicit) return explicit;
+  const category = SERVICE_CATEGORIES[serviceId as ServiceId];
+  switch (category) {
+    case "compute":
+      return "vpc_compute";
+    case "relational_db":
+    case "nosql_db":
+    case "cache":
+    case "warehouse":
+    case "database":
+    case "search":
+    case "storage":
+    case "messaging":
+    case "analytics":
+      return "vpc_data";
+    case "networking":
+      return NETWORK_EDGE.has(serviceId) ? "edge" : "vpc_public";
+    case "auth":
+      return "edge";
+    case "security":
+    case "observability":
+    case "devtools":
+      return "cross_cutting";
+    default:
+      // ml, misc, migration, iot, unknown: AWS-managed APIs outside the VPC.
+      return "external";
+  }
+}
 
 export type ContainerKey =
   | "aws_cloud"
@@ -654,7 +695,7 @@ export function validateDiagramSemantics(
 
   // 3. Containment & Topology Semantics
   for (const n of safeNodes) {
-    const expectedTier = SERVICE_TIERS[n.serviceId] ?? "vpc_data";
+    const expectedTier = tierOf(n.serviceId);
     const expectedParentMap: Record<Tier, string> = {
       edge: "container-edge",
       vpc_public: "container-public_subnet",
@@ -985,7 +1026,7 @@ export function computeLayout(services: AwsServiceMapping[]): DiagramLayout {
     external: [],
   };
   for (const m of services) {
-    const tier = SERVICE_TIERS[m.serviceId] ?? "vpc_data";
+    const tier = tierOf(m.serviceId);
     buckets[tier].push({
       componentId: m.componentId,
       serviceId: m.serviceId,
@@ -1014,7 +1055,9 @@ export function computeLayout(services: AwsServiceMapping[]): DiagramLayout {
     { key: "public_subnet" as const, placed: publicPlaced },
     { key: "compute_subnet" as const, placed: computePlaced },
     { key: "data_subnet" as const, placed: dataPlaced },
-  ].filter((s): s is { key: ContainerKey; placed: PlacedBucket } => s.placed !== null);
+  ]
+    .filter((s) => s.placed !== null)
+    .map((s) => ({ key: s.key as ContainerKey, placed: s.placed as PlacedBucket }));
 
   let azRect: Rect | null = null;
   let vpcRect: Rect | null = null;
@@ -1668,7 +1711,7 @@ export function buildDiagramElements(
     // Strictly reject any service that is not in the authoritative stage1ServiceIds
     if (!stage1ServiceIds.has(m.serviceId)) continue;
 
-    const tier = SERVICE_TIERS[m.serviceId] ?? "vpc_data";
+    const tier = tierOf(m.serviceId);
     const comp = compMap.get(m.componentId);
     const hasCustomTech =
       comp?.technology &&
@@ -1713,7 +1756,7 @@ export function buildDiagramElements(
   for (const mapping of consolidatedMappings) {
     if (!stage1ServiceIds.has(mapping.serviceId)) continue;
 
-    let placement =
+    let placement: DiagramLayout["nodes"][string] | undefined =
       layout.nodes[`${mapping.componentId}_${mapping.serviceId}`] ??
       layout.nodes[mapping.componentId];
 
@@ -1729,7 +1772,7 @@ export function buildDiagramElements(
       // Missing Service Protection:
       // If layout failed to position a service mapping, assign a safe fallback placement
       // so no Stage 1 service is ever silently dropped.
-      const tier = SERVICE_TIERS[mapping.serviceId] ?? "vpc_data";
+      const tier = tierOf(mapping.serviceId);
       const fallbackParentMap: Record<Tier, string> = {
         edge: "container-edge",
         vpc_public: "container-public_subnet",
@@ -1814,7 +1857,7 @@ export function buildDiagramElements(
     if (!renderedServiceIds.has(expServiceId)) {
       const missingMapping = plan.awsMappings.find((m) => m.serviceId === expServiceId);
       if (missingMapping) {
-        const tier = SERVICE_TIERS[expServiceId] ?? "vpc_data";
+        const tier = tierOf(expServiceId);
         const fallbackParentMap: Record<Tier, string> = {
           edge: "container-edge",
           vpc_public: "container-public_subnet",
@@ -1915,12 +1958,15 @@ export function buildDiagramElements(
 
       const forwardKey = `${srcNodeId}->${dstNodeId}`;
       if (!edgeKeys.has(forwardKey)) {
+        // Rule-engine relationships are derived from service roles, not
+        // observed in code — draw them dashed like other inferred topology.
+        const inferred = typeof rel.evidence === "string" && rel.evidence.startsWith("inferred:");
         rawEdges.push({
           source: srcNodeId,
           target: dstNodeId,
           label: rel.type ?? "",
-          style: "solid",
-          tooltip: rel.type ?? undefined,
+          style: inferred ? "dashed" : "solid",
+          tooltip: inferred ? rel.evidence : (rel.type ?? undefined),
         });
         edgeKeys.add(forwardKey);
         const pairKey = srcNodeId < dstNodeId ? `${srcNodeId}<->${dstNodeId}` : `${dstNodeId}<->${srcNodeId}`;
@@ -2029,8 +2075,9 @@ export function generateSingleDiagramXml(
   const patternTitle = xmlAttr(
     pattern
       .split("-")
+      .filter((w) => w.length > 0)
       .map((w) => w[0].toUpperCase() + w.slice(1))
-      .join(" ")
+      .join(" ") || "Generic"
   );
 
   const { layout, nodes, routedEdges } = buildDiagramElements(plan, sdkEvidence);

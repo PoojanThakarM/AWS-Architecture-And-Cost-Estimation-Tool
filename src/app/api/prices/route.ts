@@ -39,6 +39,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return NextResponse.json({ error: "Request body must be a JSON object" }, { status: 400 });
+  }
 
   // Validate region
   const region =
@@ -59,16 +62,15 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const planResult = ServicePlanSchema.safeParse(body.service_plan);
   if (!planResult.success) {
     return NextResponse.json(
-      { error: "Invalid service_plan: " + planResult.error.message },
+      { error: "Invalid service_plan", details: planResult.error.issues.slice(0, 10).map((i) => `${i.path.join(".")}: ${i.message}`) },
       { status: 400 }
     );
   }
 
+  // Same bounds as /api/analyze so both endpoints use one cost model.
   const userCount =
-    typeof body.userCount === "number" &&
-    Number.isFinite(body.userCount) &&
-    body.userCount >= 1
-      ? Math.round(body.userCount)
+    typeof body.userCount === "number" && Number.isFinite(body.userCount)
+      ? Math.min(Math.max(Math.round(body.userCount), 1), 10_000_000)
       : 10_000;
 
   const priceSource: PriceSourceMode | undefined =

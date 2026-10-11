@@ -1,0 +1,110 @@
+# Identical probe scripts run on the baseline commit and on the fixed code (offline, mocked network).
+# 'baseline' = original zip; 'AWS-Architecture-And-Cost-Estimation-Tool-main' = after fixes.
+===== baseline
+STATIC_REACT         rules [OK] static-site :: S3(m) CloudFront(m) Route53(m)
+NEXT_SSR             rules [OK] static-site :: S3(m) CloudFront(m)
+NEXT_STATIC_EXPORT   rules [OK] static-site :: S3(m) CloudFront(m)
+MERN                 rules [OK] containerised-app :: DocumentDB(h) ECS(m) ALB(m) CloudWatch(m)
+NODE_PG              rules [OK] containerised-app :: ECS(m) ECR(m) RDS(m) ALB(l) CloudWatch(m)
+DJANGO_PG            rules [OK] containerised-app :: RDS(m) ECS(m) ALB(m) CloudWatch(m)
+COMPOSE_WORKER       rules [OK] containerised-app :: ECS(m) ECR(m) ElastiCache(m) ALB(l) SQS(m) CloudFront(m) CloudWatch(m)
+SERVERLESS_AWS       rules [OK] serverless-api :: Lambda(h) DynamoDB(h) APIGateway(h) CloudWatch(m)
+CONTRADICTORY        rules [OK] containerised-app :: RDS(m) ECS(m) ALB(m) CloudWatch(m)
+JAVA_CLI             rules [LIBRARY_REPO] static-site :: S3(m) CloudFront(m) Route53(m)
+DESC "A simple React frontend with a Node.js E" rules [LIBRARY_REPO] :: 
+DESC "A Java command line tool with a public s" rules [LIBRARY_REPO] :: S3(m) CloudFront(m) Route53(m)
+DESC "Something for my college project" rules [LIBRARY_REPO] :: 
+DESC "Next.js web app with PostgreSQL database" rules [LIBRARY_REPO] :: S3(h) ElastiCache(m)
+DESC "Serverless image processing API with AWS" rules [OK] :: Lambda(h) S3(h) DynamoDB(h) CloudWatch(m)
+DESC "Containerized microservices with Docker," rules [LIBRARY_REPO] :: 
+DESC "MERN stack: React client, Express API, M" rules [LIBRARY_REPO] :: 
+DESC "A Django blog that stores data in a data" rules [LIBRARY_REPO] :: RDS(m)
+-- probe3
+404 repo: calls= 110 keyFiles= 0 insufficient= true keys: repoName,defaultBranch,keyFiles,truncated,parseErrors,readmeLength,sdkEvidence
+rate-limited: calls= 110 keyFiles= 0 insufficient= true
+huge files: sizes= README.md:31457280 main.py:31457280 truncated= false
+traversal parse: orgs/?
+-- probe4
+Lambda             GB-seconds/mo                          qty 5000000 price 0.0000166667 => 83.3335 fallback
+ECS                vCPU-hours/mo (Fargate pricing)        qty 720 price 0.04048 => 29.1456 fallback
+APIGateway         API calls (millions)/mo                qty 5 price 3.5 => 17.5000 fallback
+CloudFront         GB transferred/mo                      qty 100 price 0.0085 => 0.8500 fallback
+DynamoDB           RCU-hours/mo (On-Demand)               qty 1000000 price 2.5e-7 => 0.2500 fallback
+VPC                VPC endpoints/mo                       qty 1 price 0.01 => 0.0100 fallback
+MSK                broker-hours/mo (kafka.m5.large)       qty 720 price 0 => 0.0000 fallback
+OpenSearch         instance-hours/mo (t3.small.search)    qty 720 price 0 => 0.0000 fallback
+SecretsManager     secret-months                          qty 3 price 0 => 0.0000 fallback
+WAF                web ACL + rules/mo                     qty 1 price 0 => 0.0000 fallback
+Cognito            billable MAU past free tier            qty 0 price 0.0055 => 0.0000 fallback
+unpriced: [ 'Bedrock' ]
+total 131.09 region eu-west-1
+Cognito @100000: server=275.00 clientScaled=275.00
+Cognito @200000: server=825.00 clientScaled=550.00
+-- probe6
+validator: {"valid":true,"errors":[]}
+EcsService NetworkConfiguration: undefined
+ALB Subnets: undefined
+RDS password literal: MustBeChanged123!
+Bedrock-only plan resources: [ 'LambdaExecutionRole', 'AppFunction', 'AppBucket', 'AppLogGroup' ]
+env default/allowed: test [ 'dev', 'staging', 'prod' ] validator: true
+EC2 ImageId: undefined
+SageMaker role: arn:aws:iam::aws:policy/AmazonSageMakerFullAccess
+MSK subnets: [{"Fn::Sub":"${AppName}-${Environment}-subnet-1"},{"Fn::Sub":"${AppName}-${Environment}-subnet-2"}] valid: true
+===== AWS-Architecture-And-Cost-Estimation-Tool-main
+STATIC_REACT         rules [OK] static-site :: S3(m) CloudFront(m)
+NEXT_SSR             rules [OK] containerised-app :: ECS(m) ALB(m) CloudWatch(m)
+NEXT_STATIC_EXPORT   rules [OK] static-site :: S3(m) CloudFront(m)
+MERN                 rules [OK] containerised-app :: DocumentDB(h) ECS(m) ALB(m) S3(m) CloudFront(m) CloudWatch(m)
+NODE_PG              rules [OK] containerised-app :: ECS(m) ECR(m) RDS(m) ALB(l) CloudWatch(m)
+DJANGO_PG            rules [OK] containerised-app :: RDS(m) ECS(m) ALB(m) CloudWatch(m)
+COMPOSE_WORKER       rules [OK] containerised-app :: ECS(m) ECR(m) ElastiCache(m) ALB(l) CloudWatch(m)
+SERVERLESS_AWS       rules [OK] serverless-api :: Lambda(h) DynamoDB(h) APIGateway(h) CloudWatch(m)
+CONTRADICTORY        rules [OK] containerised-app :: RDS(m) ECS(m) ALB(m) CloudWatch(m)
+JAVA_CLI             rules [LIBRARY_REPO] generic :: 
+DESC "A simple React frontend with a Node.js E" rules [OK] :: RDS(l) ECS(l) ALB(l) S3(l) CloudFront(l) CloudWatch(l)
+DESC "A Java command line tool with a public s" rules [INSUFFICIENT_SIGNAL] :: 
+DESC "Something for my college project" rules [INSUFFICIENT_SIGNAL] :: 
+DESC "Next.js web app with PostgreSQL database" rules [OK] :: S3(l) RDS(l) ElastiCache(l) ECS(l) ALB(l) CloudWatch(l)
+DESC "Serverless image processing API with AWS" rules [OK] :: Lambda(l) S3(l) DynamoDB(l) APIGateway(l) CloudWatch(l)
+DESC "Containerized microservices with Docker," rules [OK] :: ECS(l) ECR(l) RDS(l) ALB(l) SQS(l) CloudWatch(l)
+DESC "MERN stack: React client, Express API, M" rules [OK] :: DocumentDB(l) S3(l) ECS(l) ALB(l) CloudFront(l) CloudWatch(l)
+DESC "A Django blog that stores data in a data" rules [OK] :: RDS(l) ECS(l) ALB(l) CloudWatch(l)
+-- probe3
+404 repo: calls= 1 keyFiles= 0 insufficient= true keys: repoName,defaultBranch,fetchError,keyFiles,truncated,parseErrors,readmeLength,sdkEvidence
+rate-limited: calls= 1 keyFiles= 0 insufficient= true
+huge files: sizes= README.md:65536 main.py:65536 truncated= true
+traversal parse: ?/?
+-- probe4
+ECS                vCPU-hours/mo (Fargate pricing)        qty 720 price 0.04048 => 29.1456 fallback
+CloudFront         GB transferred/mo                      qty 100 price 0.085 => 8.5000 fallback
+Lambda             GB-seconds/mo                          qty 500000 price 0.0000166667 => 8.3334 fallback
+ECS:memory         GB-hours/mo (Fargate memory)           qty 1440 price 0.004445 => 6.4008 fallback
+APIGateway         HTTP API calls (millions)/mo           qty 5 price 1 => 5.0000 fallback
+WAF                web ACLs/mo                            qty 1 price 5 => 5.0000 fallback
+SecretsManager     secret-months                          qty 3 price 0.4 => 1.2000 fallback
+Lambda:requests    requests (millions)/mo                 qty 5 price 0.2 => 1.0000 fallback
+DynamoDB:writes    write request units/mo (on-demand)     qty 250000 price 6.25e-7 => 0.1563 fallback
+DynamoDB           read request units/mo (on-demand)      qty 1000000 price 1.25e-7 => 0.1250 fallback
+Cognito            monthly active users (billable past free tier) qty 0 price 0.0055 => 0.0000 fallback
+unpriced: [ 'Bedrock', 'MSK', 'OpenSearch', 'VPC' ]
+total 64.86 region eu-west-1
+Cognito @100000: server=495.00 clientScaled=495.00
+Cognito @200000: server=1045.00 clientScaled=1045.00
+-- probe6
+validator: {"valid":true,"errors":[]}
+EcsService NetworkConfiguration: {
+  AwsvpcConfiguration: {
+    AssignPublicIp: 'ENABLED',
+    Subnets: [ [Object], [Object] ],
+    SecurityGroups: [ [Object] ]
+  }
+}
+ALB Subnets: [ { Ref: 'PublicSubnet1' }, { Ref: 'PublicSubnet2' } ]
+RDS password literal: {
+  'Fn::Sub': '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:password}}'
+}
+Bedrock-only plan resources: [ 'PlaceholderNoSupportedServices' ]
+env default/allowed: dev [ 'dev', 'staging', 'prod' ] validator: true
+EC2 ImageId: {{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}
+SageMaker role: { 'Fn::GetAtt': [ 'SageMakerExecutionRole', 'Arn' ] }
+MSK subnets: [{"Ref":"PrivateSubnet1"},{"Ref":"PrivateSubnet2"}] valid: true

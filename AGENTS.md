@@ -18,16 +18,15 @@ new decision entry.
   Never invent evidence strings to justify a service.
 - `PATTERN_IDS` stays at 8 values. The 155-service `ServiceId` catalog is
   the only list that may grow.
-- `src/lib/diagram.ts` has pre-existing `tsc` errors; leave it alone.
+- `npx tsc --noEmit` is clean (2026-10 audit fixed the old diagram.ts/ruleEngine.ts errors). Keep it clean.
 - Cost defaults are disclosed assumptions, never inferred from repo content.
 
 ## Verification
 
-- `npm test` must stay green (278/278). If a behavior change breaks a
+- `npm test` must stay green (353/353). If a behavior change breaks a
   fixture, report the exact expected-vs-actual diff; do not silently edit
   evaluation fixtures in `testing baseline.md` or `baseline-check.ts`.
-- `npx tsc --noEmit` shows only the known pre-existing errors in
-  `diagram.ts` and `ruleEngine.ts`. Introduce no new ones.
+- `npx tsc --noEmit` must stay clean; `npm run lint` must report 0 errors.
 - The 8-repo diagnostic needs network + (for the merged column) an LLM key.
   Rules-only mode measures the deterministic baseline alone.
 

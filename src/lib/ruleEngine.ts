@@ -262,6 +262,71 @@ function profileHasFrontendOnlyFramework(profile: ProjectProfile | undefined): b
   );
 }
 
+/**
+ * Meta-frameworks that run a Node.js server by default (SSR, API routes,
+ * server actions). Treating them as "frontend-only" sent server-rendered
+ * Next.js apps to S3 static hosting, where they cannot run.
+ */
+const SSR_META_FRAMEWORKS = ["Next.js", "Nuxt.js", "Remix", "SvelteKit"];
+
+function ssrFrameworkEvidence(profile: ProjectProfile | undefined): DetectedTechLike | null {
+  if (!profile) return null;
+  return (
+    profile.frameworks.find((f) =>
+      SSR_META_FRAMEWORKS.some((n) => f.name.toLowerCase() === n.toLowerCase())
+    ) ?? null
+  );
+}
+
+type DetectedTechLike = { name: string; evidence: string };
+
+/**
+ * True when the project explicitly builds to static files: Next.js
+ * `output: 'export'` / `next export`, Nuxt `nuxi generate`, or a description
+ * that says "static export/site".
+ */
+export function isStaticExport(combined: string, profile?: ProjectProfile): boolean {
+  if (/\boutput\s*:\s*["'`]export["'`]/.test(combined)) return true;
+  if (/\bnext\s+export\b|\bnuxi?\s+generate\b/.test(combined)) return true;
+  return Boolean(profile?.infrastructure.some((i) => i.name === "Static export"));
+}
+
+/**
+ * A server-rendering meta-framework that is NOT configured for static export
+ * needs a long-running compute host.
+ */
+function ssrServerEvidence(combined: string, profile: ProjectProfile | undefined): string | null {
+  const fw = ssrFrameworkEvidence(profile);
+  if (!fw || isStaticExport(combined, profile)) return null;
+  return `${fw.name} server-side rendering (${fw.evidence}); no static-export configuration found`;
+}
+
+/**
+ * Frontend SPA that lives in a different directory (its own manifest) from
+ * the backend — e.g. MERN's client/ + server/. Such a frontend is built to
+ * static files and hosted separately from the API.
+ */
+function separateFrontendEvidence(profile: ProjectProfile | undefined): string | null {
+  if (!profile) return null;
+  const fe = profile.frameworks.find((f) =>
+    FRONTEND_ONLY_FRAMEWORKS.some((b) => f.name.toLowerCase().includes(b.toLowerCase()))
+  );
+  const be = profile.frameworks.find((f) =>
+    BACKEND_FRAMEWORKS.some((b) => f.name.toLowerCase().includes(b.toLowerCase()))
+  );
+  if (!fe || !be) return null;
+  if (ssrFrameworkEvidence(profile)) return null; // the SSR server serves its own pages
+  if (profile.origin === "description") {
+    return `${fe.name} frontend and ${be.name} backend named separately (${fe.evidence})`;
+  }
+  const feDir = dirOfEvidence(fe.evidence);
+  const beDir = dirOfEvidence(be.evidence);
+  if (feDir && beDir && feDir !== beDir) {
+    return `${fe.name} client in ${fe.evidence.split(" → ")[0]} separate from ${be.name} server in ${be.evidence.split(" → ")[0]}`;
+  }
+  return null;
+}
+
 function profileHasAnyDatabase(profile: ProjectProfile | undefined): boolean {
   return Boolean(profile && profile.databases.length > 0);
 }
@@ -350,6 +415,8 @@ const NEGATIVE_RULES: NegativeRule[] = [
     reason: "pure library: no deployable runtime",
     when: ({ profile, fileNames }) => {
       if (!profile) return false;
+      // A description is a statement of intent, not a code layout.
+      if (profile.origin === "description") return false;
       if (profile.isLibraryOrFramework) return true;
       if (profile.entryPoints.length > 0) return false;
       if (profileHasBackendFramework(profile) || profileHasFrontendOnlyFramework(profile)) return false;
@@ -431,7 +498,8 @@ function driverEvidenceDirs(profile?: ProjectProfile): string[] {
   const dirs: string[] = [];
   for (const d of profile.databases) {
     if (/postgres|mysql|mariadb/i.test(d.name)) {
-      dirs.push(dirOfEvidence(d.evidence));
+      const dir = dirOfEvidence(d.evidence);
+      if (dir) dirs.push(dir);
     }
   }
   return dirs;
@@ -467,7 +535,8 @@ function familyOrmCorroborated(
   if (profile) {
     for (const f of [...profile.frameworks, ...profile.databases]) {
       if (Object.values(FAMILY_ORMS).some((res) => res.some((re) => re.test(f.name)))) {
-        ormDirs.add(dirOfEvidence(f.evidence));
+        const dir = dirOfEvidence(f.evidence);
+        if (dir) ormDirs.add(dir);
       }
     }
   }
@@ -758,7 +827,14 @@ function detectServices(
   if (sqsEv) add("SQS", "high", `SQS SDK client imported — ${sqsEv}`);
   else if (hasAny(combined, ["simple queue", "aws sqs", "aws_sqs_queue", "aws::sqs::queue"]) || hasWord(combined, ["sqs"])) {
     add("SQS", "high", "SQS reference in repository files");
-  } else if (profile && (profileHasFramework(profile, "celery") || profileHasFramework(profile, "bull"))) {
+  } else if (
+    profile &&
+    (profileHasFramework(profile, "celery") || profileHasFramework(profile, "bull")) &&
+    // Bull/BullMQ always use Redis, and Celery with a Redis dependency uses it
+    // as the broker: ElastiCache already covers the queue. Adding SQS as well
+    // duplicated the messaging tier.
+    !(dbEvidence(profile, "redis") || hasRedisConnectionString)
+  ) {
     const workerEv = profile.frameworks.find((f) => /celery|bull/i.test(f.name));
     if (hasDocker || hasAny(combined, ["worker", "queue"])) {
       add("SQS", "medium", `Task queue library detected (${workerEv?.evidence}) → SQS as backing queue on AWS`);
@@ -869,10 +945,19 @@ function detectServices(
   }
 
   // --- Static site / frontend hosting ---
+  // Static-site evidence must be specific. The bare word "static" used to
+  // qualify, so any Java file ("public static void main") became a static
+  // website; "astro" matched "astronomy". Vite counts only as a declared
+  // build tool in a manifest, and only when no server framework is present.
+  const ssrServer = ssrServerEvidence(combined, profile);
   const isStaticSite =
-    hasAny(combined, ["static site", "static website", "gatsby", "hugo", "jekyll", "astro"]) ||
-    fileHas(/vercel\.json|netlify\.toml|amplify\.yml/i) ||
-    (hasAny(combined, ["vite", "static"]) && !hasAny(combined, ["express", "fastify", "koa", "nestjs", "django", "flask", "spring", "docker", "serverless"]));
+    !ssrServer &&
+    (hasAny(combined, ["static site", "static website", "static html"]) ||
+      hasWord(combined, ["gatsby", "hugo", "jekyll"]) ||
+      Boolean(profile?.frameworks.some((f) => /^(astro|gatsby|hugo|jekyll)$/i.test(f.name))) ||
+      fileHas(/(?:^|\/)(?:vercel\.json|netlify\.toml|amplify\.ya?ml)$/i) ||
+      (Boolean(profile?.frameworks.some((f) => f.name === "Vite")) &&
+        !profileHasBackendFramework(profile)));
 
   if (isStaticSite) {
     if (!detected.some((s) => s.serviceId === "S3")) {
@@ -881,8 +966,13 @@ function detectServices(
     if (!detected.some((s) => s.serviceId === "CloudFront")) {
       add("CloudFront", "medium", "Static site generator or hosting config present → CloudFront CDN in front of S3");
     }
-    if (!detected.some((s) => s.serviceId === "Route53")) {
-      add("Route53", "medium", "DNS routing for custom domain → Route 53");
+    // Route 53 only with evidence of a custom domain (a CNAME file or an
+    // explicit DNS reference) — a static site works on the CloudFront domain.
+    if (
+      !detected.some((s) => s.serviceId === "Route53") &&
+      (fileHas(/(?:^|\/)CNAME$/) || /custom\s+domain/i.test(combined))
+    ) {
+      add("Route53", "medium", "Custom domain evidence → Route 53 DNS");
     }
   }
 
@@ -895,6 +985,17 @@ function detectServices(
     if (!detected.some((s) => s.serviceId === "APIGateway")) {
       add("APIGateway", "high", "Serverless API entry point");
     }
+  }
+
+  // Description that asks for an API on Lambda: the HTTP entry point is
+  // API Gateway (the user named both; nothing else would route requests).
+  if (
+    profile?.origin === "description" &&
+    detected.some((s) => s.serviceId === "Lambda") &&
+    !detected.some((s) => s.serviceId === "APIGateway") &&
+    /\b(?:rest(?:ful)?\s+)?api\b|\bhttp\s+endpoints?\b|\bwebhooks?\b/i.test(combined)
+  ) {
+    add("APIGateway", "medium", "Lambda + an API named in the description → API Gateway HTTP entry point", "deployment-requirement");
   }
 
   // --- Discovered components from repoAnalyzer (structural evidence) ---
@@ -1077,14 +1178,33 @@ function detectServices(
   // service on AWS. Runs before exclusivity resolves so ECS enters the
   // candidate set normally.
   if (
-    profileHasBackendFramework(profile) &&
+    (profileHasBackendFramework(profile) || ssrServer) &&
     !detected.some((s) =>
       (COMPUTE_HIERARCHY as string[]).includes(s.serviceId)
     )
   ) {
-    add("ECS", "medium", "Backend web framework with no container config → ECS as default host", "inference");
+    add(
+      "ECS",
+      "medium",
+      ssrServer
+        ? `${ssrServer} → long-running Node.js server on ECS (Fargate)`
+        : "Backend web framework with no container config → ECS as default host",
+      "inference"
+    );
     if (!detected.some((s) => s.serviceId === "ALB")) {
-      add("ALB", "medium", "Backend web framework ingress → ALB", "recommendation");
+      add("ALB", "medium", ssrServer ? "Server-rendered app ingress → ALB" : "Backend web framework ingress → ALB", "recommendation");
+    }
+  }
+
+  // Separately built SPA frontend next to a backend (MERN client/ + server/):
+  // the client is static files on S3 behind CloudFront; the API keeps its own host.
+  const separateFrontend = separateFrontendEvidence(profile);
+  if (separateFrontend) {
+    if (!detected.some((s) => s.serviceId === "S3")) {
+      add("S3", "medium", `${separateFrontend} → S3 for the built frontend assets`, "inference");
+    }
+    if (!detected.some((s) => s.serviceId === "CloudFront")) {
+      add("CloudFront", "medium", `${separateFrontend} → CloudFront CDN for the frontend`, "recommendation");
     }
   }
 
@@ -1094,6 +1214,7 @@ function detectServices(
   // is sufficient corroboration even when a sibling backend exists elsewhere.
   if (
     profileHasFrontendOnlyFramework(profile) &&
+    !ssrServer &&
     !profileHasBackendFramework(profile) &&
     !profileHasAnyDatabase(profile) &&
     !detected.some((s) => (COMPUTE_HIERARCHY as string[]).includes(s.serviceId))
@@ -1278,7 +1399,11 @@ export function buildServicePlan(
     profileHasBackendFramework(input.profile) ||
     profileHasFrontendOnlyFramework(input.profile);
   let terminalState: "OK" | "INSUFFICIENT_SIGNAL" | "LIBRARY_REPO" | "IAC_ONLY" | "MONOREPO_OK" = "OK";
-  if (input.profile?.isIacOnly) {
+  if (input.profile?.origin === "description" || (!input.profile && input.inputKind === "description")) {
+    // A description cannot be a library or an IaC repo; when it names no
+    // deployable workload the honest outcome is "not enough information".
+    terminalState = noCompute && planServices.length === 0 ? "INSUFFICIENT_SIGNAL" : "OK";
+  } else if (input.profile?.isIacOnly) {
     terminalState = "IAC_ONLY";
   } else if (input.profile?.isLibraryOrFramework) {
     terminalState = "LIBRARY_REPO";
@@ -1378,49 +1503,93 @@ export function serviceTypeFromId(serviceId: ServiceId): DiscoveredComponent["ty
   return map[serviceId] ?? "external-service";
 }
 
+/**
+ * Service roles used to derive request/data flow between rule-engine
+ * components. The previous version classified every "api"-typed component
+ * (ALB, API Gateway, Route 53) as compute, which produced edges such as
+ * "ALB reads/writes RDS" and "Route 53 reads/writes S3", while omitting the
+ * real ones (ALB → ECS, API Gateway → Lambda).
+ */
+const ROLE_COMPUTE: ReadonlySet<string> = new Set([
+  "Lambda", "ECS", "Fargate", "EKS", "EC2", "AppRunner", "ElasticBeanstalk",
+  "Lightsail", "Batch", "SageMaker",
+]);
+const ROLE_INGRESS: ReadonlySet<string> = new Set(["ALB", "NLB", "APIGateway", "AppSync"]);
+const ROLE_DATA: ReadonlySet<string> = new Set([
+  "RDS", "Aurora", "DynamoDB", "DocumentDB", "Neptune", "Keyspaces", "Timestream",
+  "QLDB", "Redshift", "ElastiCache", "MemoryDB", "OpenSearch",
+]);
+const ROLE_MESSAGING: ReadonlySet<string> = new Set([
+  "SQS", "SNS", "Kinesis", "KinesisDataStreams", "MSK", "MQ", "EventBridge",
+]);
+
+/** Marker the diagram uses to draw these edges dashed: they are derived from
+ *  service roles, not observed in code. */
+export const INFERRED_RELATIONSHIP_PREFIX = "inferred:";
+
 function buildBasicRelationships(components: DiscoveredComponent[]): ComponentRelationship[] {
   const relationships: ComponentRelationship[] = [];
-  const computeComponents = components.filter((c) => ["backend", "worker", "scheduler", "api"].includes(c.type));
-  const dbComponents = components.filter((c) => c.type === "database");
-  const cacheComponents = components.filter((c) => c.type === "cache");
-  const queueComponents = components.filter((c) => c.type === "queue" || c.type === "messaging");
-  const storageComponents = components.filter((c) => c.type === "object-storage");
+  const seen = new Set<string>();
+  const svc = (c: DiscoveredComponent) => c.technology;
+  const byRole = (role: ReadonlySet<string>) => components.filter((c) => role.has(svc(c)));
+  const find = (id: string) => components.find((c) => svc(c) === id);
+  const link = (from: DiscoveredComponent, to: DiscoveredComponent, type: string, why: string) => {
+    if (from.id === to.id) return;
+    const key = `${from.id}->${to.id}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    relationships.push({ from: from.id, to: to.id, type, evidence: `${INFERRED_RELATIONSHIP_PREFIX} ${why}` });
+  };
 
-  for (const compute of computeComponents) {
-    for (const db of dbComponents) {
-      relationships.push({ from: compute.id, to: db.id, type: "reads/writes", evidence: "compute → database" });
-    }
-    for (const cache of cacheComponents) {
-      relationships.push({ from: compute.id, to: cache.id, type: "reads/writes", evidence: "compute → cache" });
-    }
-    for (const queue of queueComponents) {
-      relationships.push({ from: compute.id, to: queue.id, type: "sends/receives", evidence: "compute → queue" });
-    }
-    for (const storage of storageComponents) {
-      relationships.push({ from: compute.id, to: storage.id, type: "reads/writes", evidence: "compute → storage" });
+  const compute = byRole(ROLE_COMPUTE);
+  const ingress = byRole(ROLE_INGRESS);
+  const route53 = find("Route53");
+  const cloudfront = find("CloudFront");
+  const s3 = find("S3");
+  const ecr = find("ECR");
+  const cognito = find("Cognito");
+  const lambda = find("Lambda");
+  const apigw = find("APIGateway");
+
+  // DNS → first public entry point.
+  if (route53) {
+    const entry = cloudfront ?? ingress[0] ?? null;
+    if (entry) link(route53, entry, "resolves", `Route 53 DNS → ${svc(entry)}`);
+  }
+
+  // CDN → origins.
+  if (cloudfront) {
+    if (s3) link(cloudfront, s3, "origin", "CloudFront serves static assets from S3");
+    for (const i of ingress) link(cloudfront, i, "origin", `CloudFront forwards dynamic requests to ${svc(i)}`);
+    if (ingress.length === 0 && !s3) {
+      for (const c of compute) link(cloudfront, c, "origin", `CloudFront forwards requests to ${svc(c)}`);
     }
   }
 
-  // Worker → queue
-  for (const worker of components.filter((c) => c.type === "worker")) {
-    for (const queue of queueComponents) {
-      relationships.push({ from: worker.id, to: queue.id, type: "consumes", evidence: "worker → queue" });
+  // Ingress → compute. API Gateway pairs with Lambda when both exist;
+  // load balancers pair with server compute.
+  for (const i of ingress) {
+    if (svc(i) === "APIGateway" && lambda) {
+      link(i, lambda, "invokes", "API Gateway invokes Lambda");
+      continue;
+    }
+    const targets = compute.filter((c) => !(svc(i) !== "APIGateway" && svc(c) === "Lambda" && compute.length > 1));
+    for (const c of targets) link(i, c, "routes", `${svc(i)} routes requests to ${svc(c)}`);
+  }
+
+  // Compute → data / messaging / object storage / identity.
+  for (const c of compute) {
+    for (const d of byRole(ROLE_DATA)) link(c, d, "reads/writes", `${svc(c)} uses ${svc(d)}`);
+    for (const q of byRole(ROLE_MESSAGING)) link(c, q, "sends/receives", `${svc(c)} exchanges messages via ${svc(q)}`);
+    if (s3) link(c, s3, "reads/writes", `${svc(c)} stores objects in S3`);
+    if (cognito) link(c, cognito, "verifies tokens", `${svc(c)} validates Cognito-issued tokens`);
+    if (ecr && ["ECS", "Fargate", "EKS", "AppRunner"].includes(svc(c))) {
+      link(ecr, c, "image pull", `${svc(c)} pulls container images from ECR`);
     }
   }
 
-  // Scheduler → compute
-  for (const scheduler of components.filter((c) => c.type === "scheduler")) {
-    for (const compute of computeComponents) {
-      relationships.push({ from: scheduler.id, to: compute.id, type: "triggers", evidence: "scheduler → compute" });
-    }
-  }
-
-  // Frontend → API
-  for (const frontend of components.filter((c) => c.type === "frontend")) {
-    for (const api of components.filter((c) => c.type === "api" || c.type === "backend")) {
-      relationships.push({ from: frontend.id, to: api.id, type: "calls", evidence: "frontend → API" });
-    }
-  }
+  // API Gateway authorizer.
+  if (apigw && cognito) link(apigw, cognito, "authorizes", "API Gateway JWT authorizer backed by Cognito");
 
   return relationships.slice(0, 50);
 }

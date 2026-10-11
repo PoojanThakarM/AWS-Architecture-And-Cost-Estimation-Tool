@@ -42,9 +42,27 @@ export interface SdkEvidence {
   serviceHint?: string;
 }
 
+/**
+ * Why a repository could not be read at all. Distinct from "the repo exists
+ * but has little signal" — the route must never tell a user to "describe it
+ * instead" when the real problem is a typo, a private repo, or a rate limit.
+ */
+export type RepoFetchError =
+  | "invalid-url"
+  | "not-found" // 404: does not exist, or is private and we have no access
+  | "rate-limited" // 403/429 with an exhausted GitHub rate limit
+  | "forbidden" // 401/403 for any other reason (bad token, blocked)
+  | "empty-repository" // 409: repository has no commits
+  | "network"; // GitHub unreachable / timed out
+
 export interface RepoSignals {
   repoName: string; // "owner/repo"
   defaultBranch: string;
+  /**
+   * Set when the repository could not be read. `keyFiles` is then empty and
+   * no inference should be attempted from it.
+   */
+  fetchError?: RepoFetchError;
   keyFiles: KeyFile[];
   /** True if any file or the tree was capped */
   truncated: boolean;
@@ -89,6 +107,10 @@ const MANIFEST_PATTERNS = [
   /^lerna\.json$/,
   /^rush\.json$/,
   /^pnpm-workspace\.ya?ml$/,
+  // Next.js config decides static export (`output: 'export'`) vs. a
+  // server-rendered Node.js process — without it SSR cannot be told apart
+  // from a static site.
+  /^next\.config\.(?:js|mjs|cjs|ts)$/,
 ];
 
 // Monorepo nested manifests pattern for backwards compatibility
@@ -185,6 +207,101 @@ const SOURCE_GLOB_PATTERNS = [
 const MAX_TREE_PATHS = 50_000;
 const GITHUB_API = "https://api.github.com";
 const FETCH_TIMEOUT_MS = 10_000;
+
+/**
+ * Per-file read cap (Decision 23: 64 KB). Repository contents are untrusted;
+ * without a cap one oversized file (a generated values.yaml, a vendored
+ * bundle named index.js) is read fully into memory and sent to the LLM.
+ */
+export const MAX_FILE_BYTES = 64 * 1024;
+
+/** GitHub owner: 1–39 chars, alphanumeric or single hyphens. */
+const GITHUB_OWNER_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+/** GitHub repository name: letters, digits, '.', '_', '-' (not "." or ".."). */
+const GITHUB_REPO_RE = /^(?!\.{1,2}$)[A-Za-z0-9._-]{1,100}$/;
+
+/**
+ * Parses and validates a github.com repository URL into owner/repo.
+ * Returns null for anything that is not exactly a repository URL — the route
+ * rejects it with a 400 instead of fanning out requests for a guessed path.
+ */
+export function parseGitHubRepoUrl(repoUrl: string): { owner: string; repo: string } | null {
+  let url: URL;
+  try {
+    url = new URL(repoUrl);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+  if (url.hostname !== "github.com" && url.hostname !== "www.github.com") return null;
+  if (url.username || url.password || url.port) return null;
+  // Raw pathname: percent-encoded segments ("%2e%2e") must not be decoded
+  // into something the regexes accept.
+  const parts = url.pathname.split("/").filter(Boolean);
+  if (parts.length < 2) return null;
+  const owner = parts[0];
+  const repo = parts[1].replace(/\.git$/, "");
+  if (!GITHUB_OWNER_RE.test(owner) || !GITHUB_REPO_RE.test(repo)) return null;
+  return { owner, repo };
+}
+
+/** Encodes each path segment so '#', '?', spaces etc. stay inside the path. */
+function encodePath(path: string): string {
+  return path.split("/").map(encodeURIComponent).join("/");
+}
+
+/**
+ * Reads a response body as UTF-8 text, stopping at `maxBytes`. Streaming
+ * decode (`stream: true`) keeps multi-byte characters split across chunks
+ * intact.
+ */
+export async function readTextCapped(
+  res: Response,
+  maxBytes: number
+): Promise<{ text: string; bytes: number; truncated: boolean }> {
+  const declared = Number(res.headers.get("content-length") ?? "NaN");
+  const reader = res.body?.getReader();
+  if (!reader) {
+    const text = await res.text();
+    const bytes = Buffer.byteLength(text, "utf8");
+    return bytes > maxBytes
+      ? { text: Buffer.from(text, "utf8").subarray(0, maxBytes).toString("utf8"), bytes, truncated: true }
+      : { text, bytes, truncated: false };
+  }
+  const decoder = new TextDecoder("utf-8");
+  let text = "";
+  let read = 0;
+  let truncated = false;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const remaining = maxBytes - read;
+    if (value.byteLength > remaining) {
+      text += decoder.decode(value.subarray(0, remaining), { stream: true });
+      read += remaining;
+      truncated = true;
+      break;
+    }
+    text += decoder.decode(value, { stream: true });
+    read += value.byteLength;
+  }
+  text += decoder.decode();
+  if (truncated) {
+    await reader.cancel().catch(() => undefined);
+  }
+  const bytes = Number.isFinite(declared) && declared > read ? declared : read;
+  return { text, bytes, truncated: truncated || bytes > read };
+}
+
+/** Maps a failed GitHub API response to a RepoFetchError. */
+function classifyGitHubFailure(res: Response): RepoFetchError {
+  if (res.status === 404) return "not-found";
+  if (res.status === 409) return "empty-repository";
+  if (res.status === 429) return "rate-limited";
+  if (res.status === 403 && res.headers.get("x-ratelimit-remaining") === "0") return "rate-limited";
+  if (res.status === 401 || res.status === 403) return "forbidden";
+  return "network";
+}
 
 // ---------------------------------------------------------------------------
 // File-kind classifier & relevance scoring (Fix 3)
@@ -633,37 +750,39 @@ export async function fetchRepoSignals(
   repoUrl: string,
   githubToken?: string
 ): Promise<RepoSignals> {
-  // Parse owner/repo from URL
-  const url = new URL(repoUrl);
-  const parts = url.pathname.replace(/^\//, "").split("/");
-  const owner = parts[0];
-  const repo = parts[1]?.replace(/\.git$/, "");
-
-  if (!owner || !repo) {
-    return emptySignals(`${owner ?? "?"}/${repo ?? "?"}`, "could-not-parse-url");
+  const parsed = parseGitHubRepoUrl(repoUrl);
+  if (!parsed) {
+    return emptySignals("?/?", "invalid-url");
   }
+  const { owner, repo } = parsed;
 
   const repoName = `${owner}/${repo}`;
   const parseErrors: string[] = [];
   let overallTruncated = false;
 
-  // 1. Get default branch
+  // 1. Repository metadata. This is the one call that tells us whether the
+  //    repository exists and is readable; every later step depends on it.
+  //    A 404 here used to be swallowed, after which ~110 speculative requests
+  //    were fired at a repository that does not exist.
   let defaultBranch = "main";
   try {
     const metaRes = await ghFetch(`${GITHUB_API}/repos/${owner}/${repo}`, githubToken);
     if (metaRes.ok) {
-      const meta = (await metaRes.json()) as { default_branch?: string };
+      const meta = (await metaRes.json()) as { default_branch?: string; size?: number };
       defaultBranch = meta.default_branch ?? "main";
+    } else {
+      return emptySignals(repoName, classifyGitHubFailure(metaRes));
     }
   } catch {
-    // fall through with "main"
+    return emptySignals(repoName, "network");
   }
 
   // 2. Get file tree
   let treePaths: string[] = [];
+  let treeFailed = false;
   try {
     const treeRes = await ghFetch(
-      `${GITHUB_API}/repos/${owner}/${repo}/git/trees/${defaultBranch}?recursive=1`,
+      `${GITHUB_API}/repos/${owner}/${repo}/git/trees/${encodeURIComponent(defaultBranch)}?recursive=1`,
       githubToken
     );
     if (treeRes.ok) {
@@ -676,9 +795,17 @@ export async function fetchRepoSignals(
         .filter((t) => t.type === "blob")
         .map((t) => t.path)
         .slice(0, MAX_TREE_PATHS);
+    } else {
+      const failure = classifyGitHubFailure(treeRes);
+      // 404/409 on the tree of an existing repo means it has no commits.
+      if (failure === "not-found" || failure === "empty-repository") {
+        return emptySignals(repoName, "empty-repository");
+      }
+      if (failure === "rate-limited") return emptySignals(repoName, "rate-limited");
+      treeFailed = true;
     }
   } catch {
-    // fall through with empty tree — fallback probing will run below
+    treeFailed = true;
   }
 
   // 3. Classify and relevance-sort files (Fix 3)
@@ -688,18 +815,15 @@ export async function fetchRepoSignals(
     if (c) candidates.push({ path, ...c });
   }
 
-  // Fallback probing: if tree API returned nothing (e.g. rate limit / 403), probe raw.githubusercontent.com directly
-  if (candidates.length === 0) {
+  // Fallback probing: only when the tree call itself failed (not when the
+  // tree was readable but simply contained no recognised files — probing
+  // then can only produce 404s).
+  if (candidates.length === 0 && treeFailed) {
     const PROBE_LIST = [
-      "README.md", "Readme.md", "readme.md", "README.rst",
-      "package.json", "requirements.txt", "pyproject.toml",
-      "go.mod", "go.work", "Cargo.toml", "Dockerfile", "docker-compose.yml",
-      "docker-compose.yaml", "serverless.yml", "pom.xml",
-      "build.gradle", "Gemfile", "composer.json", "mix.exs",
-      "deno.json", "deno.jsonc", "schema.prisma",
-      "main.tf", "variables.tf", "outputs.tf", "versions.tf",
-      "turbo.json", "nx.json", "pnpm-workspace.yaml",
-      "index.js", "index.ts", "app.js", "app.ts", "server.js", "server.ts", "main.py"
+      "README.md", "package.json", "requirements.txt", "pyproject.toml",
+      "go.mod", "Cargo.toml", "Dockerfile", "docker-compose.yml",
+      "serverless.yml", "pom.xml", "build.gradle", "Gemfile", "composer.json",
+      "main.tf", "template.yaml",
     ];
     for (const f of PROBE_LIST) {
       const c = classifyFile(f);
@@ -708,99 +832,92 @@ export async function fetchRepoSignals(
   }
 
   // Workspace-aware selection (breadth-first across top-level directories).
-  // Priority files always win a slot: README, workspace-root files, root
-  // manifests, and all container/CI/IaC files. Remaining budget is dealt
-  // round-robin, one manifest per top-level directory per round, so every
-  // service directory contributes at least one manifest instead of losing to
-  // shallow noise under a depth penalty.
   const MAX_SELECTED_FILES = 60;
   const selected = selectWorkspaceAware(candidates, MAX_SELECTED_FILES);
 
-  // 4. Fetch each selected file without payload limits
+  // 4. Fetch each selected file, capped at MAX_FILE_BYTES.
   const keyFiles: KeyFile[] = [];
   let readmeLength = 0;
+  const isProbed = treePaths.length === 0;
 
-    const isProbed = treePaths.length === 0;
-    for (const candidate of selected) {
-      let raw: string | null = null;
-      let sizeBytes = 0;
+  for (const candidate of selected) {
+    let raw: string | null = null;
+    let sizeBytes = 0;
+    let fileTruncated = false;
 
+    // raw.githubusercontent first (not rate-limited); fall back to the
+    // /contents API (base64) only on a raw miss. The branch is known from the
+    // metadata call, so no main/master guessing is needed.
+    const rawController = new AbortController();
+    const rawTimer = setTimeout(() => rawController.abort(), FETCH_TIMEOUT_MS);
+    try {
+      const rawFetch = await fetch(
+        `https://raw.githubusercontent.com/${owner}/${repo}/${encodeURIComponent(defaultBranch)}/${encodePath(candidate.path)}`,
+        {
+          headers: githubToken ? { Authorization: `Bearer ${githubToken}` } : {},
+          signal: rawController.signal,
+          redirect: "error",
+        }
+      );
+      if (rawFetch.ok) {
+        const capped = await readTextCapped(rawFetch, MAX_FILE_BYTES);
+        raw = capped.text;
+        sizeBytes = capped.bytes;
+        fileTruncated = capped.truncated;
+      } else if (rawFetch.status === 404 && isProbed) {
+        clearTimeout(rawTimer);
+        continue; // speculative probe: file simply does not exist
+      }
+    } catch {
+      // fall through to the contents API
+    } finally {
+      clearTimeout(rawTimer);
+    }
+
+    if (raw === null && !isProbed) {
       try {
-        // raw.githubusercontent first (not rate-limited); fall back to the
-        // /contents API (base64) only on a raw miss.
-        const rawController = new AbortController();
-        const rawTimer = setTimeout(() => rawController.abort(), FETCH_TIMEOUT_MS);
-        try {
-          let rawFetch = await fetch(
-            `https://raw.githubusercontent.com/${owner}/${repo}/${defaultBranch}/${candidate.path}`,
-            {
-              headers: githubToken ? { Authorization: `Bearer ${githubToken}` } : {},
-              signal: rawController.signal,
-              redirect: "error",
-            }
-          );
-          if (!rawFetch.ok && (defaultBranch === "main" || defaultBranch === "master")) {
-            const altBranch = defaultBranch === "main" ? "master" : "main";
-            try {
-              const altFetch = await fetch(
-                `https://raw.githubusercontent.com/${owner}/${repo}/${altBranch}/${candidate.path}`,
-                {
-                  headers: githubToken ? { Authorization: `Bearer ${githubToken}` } : {},
-                  signal: rawController.signal,
-                  redirect: "error",
-                }
-              );
-              if (altFetch.ok) rawFetch = altFetch;
-            } catch {
-              // keep original rawFetch
-            }
-          }
-          clearTimeout(rawTimer);
-          if (!rawFetch.ok) throw new Error(`HTTP ${rawFetch.status}`);
-          const rawContent = await rawFetch.text();
-          sizeBytes = Buffer.byteLength(rawContent, "utf8");
-          raw = rawContent;
-        } catch {
-          clearTimeout(rawTimer);
-          // Fallback: JSON contents API (returns base64, counts against rate limit)
-          try {
-            const rawRes = await ghFetch(
-              `${GITHUB_API}/repos/${owner}/${repo}/contents/${candidate.path}`,
-              githubToken
-            );
-            if (rawRes.ok) {
-              const data = (await rawRes.json()) as { content?: string; size?: number };
-              sizeBytes = data.size ?? 0;
-              if (data.content) {
-                raw = Buffer.from(data.content.replace(/\n/g, ""), "base64").toString("utf8");
-              }
-            }
-          } catch {
-            // fall through to the null-content handling below
+        const rawRes = await ghFetch(
+          `${GITHUB_API}/repos/${owner}/${repo}/contents/${encodePath(candidate.path)}`,
+          githubToken
+        );
+        if (rawRes.ok) {
+          const data = (await rawRes.json()) as { content?: string; size?: number };
+          sizeBytes = data.size ?? 0;
+          if (data.content) {
+            const buf = Buffer.from(data.content.replace(/\n/g, ""), "base64");
+            fileTruncated = buf.byteLength > MAX_FILE_BYTES;
+            raw = buf.subarray(0, MAX_FILE_BYTES).toString("utf8");
           }
         }
       } catch {
-        // File fetch failed entirely — ignore if this was a speculative probe
-        if (isProbed) continue;
-        parseErrors.push(candidate.path);
-        keyFiles.push({ path: candidate.path, kind: candidate.kind, content: null, sizeBytes: 0, truncated: false });
-        continue;
+        // fall through to the null-content handling below
       }
+    }
 
-      if (raw === null) {
-        // Probe 404: file does not exist in the repository
-        if (isProbed) continue;
-        parseErrors.push(candidate.path);
-        keyFiles.push({ path: candidate.path, kind: candidate.kind, content: null, sizeBytes, truncated: false });
-        continue;
-      }
+    if (raw === null) {
+      if (isProbed) continue;
+      parseErrors.push(candidate.path);
+      keyFiles.push({ path: candidate.path, kind: candidate.kind, content: null, sizeBytes, truncated: false });
+      continue;
+    }
 
     // Track README length (before compaction)
     if (candidate.kind === "readme") {
       readmeLength = raw.length;
     }
 
-    // Process content without size truncation
+    if (fileTruncated) {
+      overallTruncated = true;
+      // A structured file cut mid-document is no longer valid JSON/YAML.
+      // Decision 24: never feed malformed structure downstream — degrade to a
+      // filename-only signal instead.
+      if (/\.(json|ya?ml|toml|xml)$/i.test(candidate.path) || candidate.kind === "manifest") {
+        parseErrors.push(candidate.path);
+        keyFiles.push({ path: candidate.path, kind: candidate.kind, content: null, sizeBytes, truncated: true });
+        continue;
+      }
+    }
+
     const processed = processContent(candidate.path, raw, parseErrors);
 
     keyFiles.push({
@@ -808,7 +925,7 @@ export async function fetchRepoSignals(
       kind: candidate.kind,
       content: processed.content,
       sizeBytes,
-      truncated: false,
+      truncated: fileTruncated,
     });
   }
 
@@ -829,10 +946,11 @@ export async function fetchRepoSignals(
 // Helpers
 // ---------------------------------------------------------------------------
 
-function emptySignals(repoName: string, _reason: string): RepoSignals {
+function emptySignals(repoName: string, reason: RepoFetchError): RepoSignals {
   return {
     repoName,
     defaultBranch: "main",
+    fetchError: reason,
     keyFiles: [],
     truncated: false,
     parseErrors: [],

@@ -140,16 +140,16 @@ export function AnalysisVisualizer({
     [inputKind]
   );
 
-  const [currentStageIdx, setCurrentStageIdx] = useState(0);
-  const [progress, setProgress] = useState(12);
+  const [stepIdx, setCurrentStageIdx] = useState(0);
+  const [stepProgress, setProgress] = useState(12);
+  // Completion is derived from props rather than written into state inside
+  // the effect (react-hooks/set-state-in-effect).
+  const currentStageIdx = isComplete ? stages.length - 1 : stepIdx;
+  const progress = isComplete ? 100 : stepProgress;
 
   // Progressive stage stepper
   useEffect(() => {
     if (isComplete) {
-      // Fast forward smoothly to 100%
-      setCurrentStageIdx(stages.length - 1);
-      setProgress(100);
-
       const timer = setTimeout(() => {
         onTransitionComplete?.();
       }, 700);

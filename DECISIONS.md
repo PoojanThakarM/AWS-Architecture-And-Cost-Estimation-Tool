@@ -157,4 +157,19 @@ Decisions taken after Module A reached feature-complete (2026-09-05). These supe
 | I-24 | **Deleted `mergeSingleServicePlan`/`mergeServicePlans` and their tests (Decision 51)** | Grep confirmed zero production call sites outside `__tests__/`. `runInference` runs rules baseline OR LLM deterministic mapping, never both, so the ~360-line union-merge (I-10, I-11, I-23) was dead code. Deletion over repair: union-merge adds services while the 8-repo diagnostic demanded fewer invented ones. `inference.ts` now holds only `deriveGrounding`, `applyGroundingCap`, and `runInference`. |
 | I-25 | **Gated `applyPatternBaselines` to zero unconditional injections (Decision 52)** | Every baseline entry carried a fabricated evidence string, violating commit `6286583`. The function now emits nothing; `mapComponentToAws` component mappings (each carrying genuine evidence) already cover the tiers. Unit expectations updated: no CloudWatch/S3-from-baseline without evidence (architecture, stage1Regression). Full suite 274/274 (4 removed merge tests account for the 278→274 delta). Rules-only 8-repo diagnostic: 0/8 — unchanged, since the rules engine was not touched; merged-column comparison was not measurable (no LLM key configured). |
 
-*Last updated: 2026-09-27 — Decision 53 consolidates the monorepo fetch→detection chain (bucket fix + budget reservation + .NET map variants). 278/278 tests pass; `tsc` shows only pre-existing diagram.ts/ruleEngine.ts errors (untouched, out of scope).*
+### Audit fixes · 2026-10-11 (see `docs/BUG_FIX_REPORT.md`)
+
+Decisions marked **Pending approval** were made to fix confirmed defects but change product behaviour; the team should confirm or reverse them.
+
+| # | Decision | Why | Status |
+|---|----------|-----|--------|
+| 54 | **Descriptions get a deterministic evidence profile (`descriptionAnalyzer.ts`)** | In rules-only mode (the zero-config default) descriptions produced zero services. Only technologies the user names are recorded, each citing their phrase; open questions are returned as warnings. | Locked |
+| 55 | **Server-rendered meta-frameworks (Next.js/Nuxt/Remix/SvelteKit) map to compute (ECS + ALB) unless static export is configured** | SSR apps cannot run on S3. Alternatives (Amplify Hosting, App Runner) are named in the evidence string. | Pending approval |
+| 56 | **Route 53 only with custom-domain evidence** | A static site works on its CloudFront domain; Route 53 without a domain was decoration. Changed one evaluation fixture (`astro-docs-static`). | Pending approval |
+| 57 | **Rule-engine relationships are role-based and drawn dashed (`inferred:` evidence)** | The old builder produced ALB→RDS / Route53→S3 edges. Edges are now derived from service roles and marked as inferred, not code-confirmed. | Locked |
+| 58 | **Cost rows can have multiple billing lines; missing prices are "unpriced", never $0; fallbacks labelled with region + provenance** | Fixes Lambda 10×, CloudFront 10×, live per-request unit mismatch, $0 rows for MSK/OpenSearch/Secrets/WAF, Cognito client/server mismatch. API Gateway priced as HTTP API to match the CFN export. Cognito free tier set to 10k MAU (new pools since 2024-11-22). | Pending approval (Cognito tier, CloudWatch metrics fixed) |
+| 59 | **CloudFormation export adds a VPC prerequisite for networked services, generates DB secrets, and never fills empty plans with canonical services** | Old templates failed cfn-lint (7 errors) and embedded passwords; a Bedrock-only plan exported Lambda+S3. | Locked |
+| 60 | **Serverless alternate swaps compute only (removes ECR, never adds a database)** | It added DynamoDB to apps with no DB or next to RDS. | Pending approval |
+| 61 | **LLM summary lists must be corroborated by the evidence register (or the description)** | `mapListTechnologies` could add services from uncited list entries. | Locked |
+
+*Last updated: 2026-10-11 — audit decisions 54–61 added. Previously 2026-09-27 — Decision 53 consolidates the monorepo fetch→detection chain (bucket fix + budget reservation + .NET map variants). 278/278 tests pass; `tsc` shows only pre-existing diagram.ts/ruleEngine.ts errors (untouched, out of scope).*

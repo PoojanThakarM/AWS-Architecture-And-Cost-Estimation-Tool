@@ -18,8 +18,11 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   fetchRepoSignals,
   isInsufficientSignal,
+  parseGitHubRepoUrl,
   signalsToRuleInput,
 } from "@/lib/repoFetcher";
+import type { RepoFetchError } from "@/lib/repoFetcher";
+import { analyzeDescription } from "@/lib/descriptionAnalyzer";
 import { analyzeProject } from "@/lib/repoAnalyzer";
 import { runInference, deriveGrounding } from "@/lib/inference";
 import { generateDiagramXml } from "@/lib/diagram";
@@ -74,12 +77,28 @@ function isGitHubUrl(value: string): boolean {
     const url = new URL(value);
     return (
       (url.protocol === "https:" || url.protocol === "http:") &&
-      ALLOWED_GITHUB_HOSTS.includes(url.hostname)
+      ALLOWED_GITHUB_HOSTS.includes(url.hostname.replace(/^www\./, "")) &&
+      parseGitHubRepoUrl(value) !== null
     );
   } catch {
     return false;
   }
 }
+
+/**
+ * User-facing explanation + HTTP status for a repository that could not be
+ * read at all. These used to collapse into "Couldn't extract enough from this
+ * repo — describe it instead", which is wrong advice for a typo or a private
+ * repository.
+ */
+const FETCH_ERROR_RESPONSES: Record<RepoFetchError, { status: number; error: string }> = {
+  "invalid-url": { status: 400, error: "That is not a github.com repository URL (expected https://github.com/<owner>/<repo>)." },
+  "not-found": { status: 404, error: "Repository not found. Check the URL — private repositories cannot be analysed without authorised access." },
+  "rate-limited": { status: 429, error: "GitHub API rate limit reached. Try again later, or configure GITHUB_TOKEN on the server." },
+  forbidden: { status: 502, error: "GitHub refused access to this repository." },
+  "empty-repository": { status: 422, error: "This repository has no commits, so there is nothing to analyse." },
+  network: { status: 502, error: "GitHub could not be reached. Try again in a moment." },
+};
 
 function cleanPlanForSerialization(plan: ServicePlan): ServicePlan {
   if (!plan) return plan;
@@ -87,10 +106,11 @@ function cleanPlanForSerialization(plan: ServicePlan): ServicePlan {
   if (!proposals || proposals.length === 0) {
     return rest as ServicePlan;
   }
-  const cleanProposals = proposals.map((p: any) => {
+  const cleanProposals = proposals.map((p: ServicePlan) => {
     if (!p) return p;
-    const { proposals: _sub, ...subRest } = p;
-    return subRest as ServicePlan;
+    const subRest: ServicePlan = { ...p };
+    delete subRest.proposals;
+    return subRest;
   });
   return { ...rest, proposals: cleanProposals } as ServicePlan;
 }
@@ -105,6 +125,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     body = (await req.json()) as AnalyzeRequestBody;
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return NextResponse.json({ error: "Request body must be a JSON object" }, { status: 400 });
   }
 
   // User-facing prose (warnings) and machine-readable pipeline records
@@ -154,7 +177,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
     if (!isGitHubUrl(value)) {
       return NextResponse.json(
-        { error: "URL must be a valid github.com HTTPS URL" },
+        { error: FETCH_ERROR_RESPONSES["invalid-url"].error },
         { status: 400 }
       );
     }
@@ -191,6 +214,16 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   if (kind === "github_url") {
     const githubToken = process.env.GITHUB_TOKEN;
     signals = await fetchRepoSignals(value, githubToken);
+
+    // Repository unreadable (missing, private, rate-limited, empty): report
+    // the real reason. No inference is attempted from nothing.
+    if (signals.fetchError) {
+      const r = FETCH_ERROR_RESPONSES[signals.fetchError];
+      return NextResponse.json(
+        { error: r.error, code: `repo-${signals.fetchError}` },
+        { status: r.status }
+      );
+    }
 
     // Insufficient-signal gate (Decision 20 / flaw 8)
     if (isInsufficientSignal(signals)) {
@@ -254,9 +287,20 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       );
     }
   } else {
-    // Freeform description path — no fetch, grounding = description
+    // Freeform description path — no fetch, grounding = description.
+    // The description is turned into a deterministic evidence profile (each
+    // technology cites the phrase it came from) so the rules engine — the
+    // only path when no LLM is configured — has something to work with.
     grounding = "description";
     description = value;
+    const descriptionProfile = analyzeDescription(value);
+    profile = descriptionProfile;
+    if (descriptionProfile.unresolved.length > 0) {
+      warnings.push(
+        `Your description does not specify: ${descriptionProfile.unresolved.join("; ")}. ` +
+          "Add these details for a more specific architecture."
+      );
+    }
     ruleInput = {
       description: value,
       fileContent: "",
@@ -265,6 +309,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       grounding,
       truncated: false,
       parseErrors: [],
+      profile,
     };
   }
 

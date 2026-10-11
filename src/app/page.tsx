@@ -13,9 +13,9 @@
  * - Region price updates via POST /api/prices
  */
 
-import React, { useState, useCallback, useRef } from "react";
+import React, { useState, useCallback } from "react";
 import type { CostResult } from "@/lib/cost";
-import type { ServicePlan, Grounding } from "@/lib/schema";
+import type { ServicePlan, Grounding, Diagnostic, PipelineEngine } from "@/lib/schema";
 import type { ProjectProfile } from "@/lib/repoAnalyzer";
 import type { ArchitectureModel } from "@/lib/architecture";
 
@@ -24,6 +24,7 @@ import { DiagramViewer } from "@/components/DiagramViewer";
 import { CostCalculator } from "@/components/CostCalculator";
 import { ArchitectureStack } from "@/components/ArchitectureStack";
 import {
+  EngineBanner,
   GroundingBanner,
   WarningsBanner,
   AssumptionsDisclosure,
@@ -78,6 +79,9 @@ interface AnalyzeResponse {
   cost_rows: CostResult | null;
   cost_rows_list?: (CostResult | null)[];
   warnings: string[];
+  /** Which inference path produced the plan: AI-enhanced, rules-only, or AI-failed fallback. */
+  engine?: PipelineEngine;
+  diagnostics?: Diagnostic[];
   project_profile?: ProjectProfile;
   architecture_model?: ArchitectureModel;
 }
@@ -110,11 +114,15 @@ function formatAnalysisReport(res: AnalyzeResponse): string {
   lines.push("AWS ARCHITECTURE & SERVICE REQUIREMENTS ANALYSIS REPORT");
   lines.push("================================================================================");
   lines.push(`Input Kind:         ${res.input_kind}`);
+  lines.push(`Inference Mode:     ${res.engine === "llm" ? "AI-enhanced" : res.engine === "rules-fallback" ? "AI failed — rules baseline used" : "Rules-only"}`);
   lines.push(`Grounding Level:    ${res.grounding}`);
   lines.push(`Detected Pattern:   ${res.service_plan.detectedPattern ?? "generic"}`);
   lines.push(`Mapped AWS Services: ${res.service_plan.awsMappings.length}`);
   if (res.cost_rows) {
-    lines.push(`Monthly Estimate:   $${res.cost_rows.totalMonthlyUsd.toFixed(2)} USD/mo (${res.cost_rows.region}, 10,000 users)`);
+    lines.push(`Monthly Estimate:   $${res.cost_rows.totalMonthlyUsd.toFixed(2)} USD/mo (${res.cost_rows.region}, ${res.cost_rows.userCount.toLocaleString("en-US")} users) — estimate, not a bill`);
+    if (res.cost_rows.unpricedRows.length > 0) {
+      lines.push(`Not in total:       ${res.cost_rows.unpricedRows.map((u) => u.serviceId).join(", ")}`);
+    }
   }
   lines.push("================================================================================\n");
 
@@ -194,7 +202,7 @@ export default function Home() {
   const [copiedText, setCopiedText] = useState(false);
 
   // Keep track of what was submitted for the visualizer
-  const submittedValueRef = useRef("");
+  const [submittedValue, setSubmittedValue] = useState("");
 
   // Submission handler
   const handleSubmit = useCallback(
@@ -208,7 +216,7 @@ export default function Home() {
       setLoading(true);
 
       const targetValue = activeTab === "github" ? githubUrl.trim() : description.trim();
-      submittedValueRef.current = targetValue;
+      setSubmittedValue(targetValue);
 
       const input =
         activeTab === "github"
@@ -347,7 +355,7 @@ export default function Home() {
           <div className="my-auto animate-fadeIn">
             <AnalysisVisualizer
               inputKind={activeTab === "github" ? "github_url" : "description"}
-              inputValue={submittedValueRef.current}
+              inputValue={submittedValue}
               isComplete={analysisComplete}
               onTransitionComplete={handleTransitionToResults}
             />
@@ -402,7 +410,7 @@ export default function Home() {
                       <span className="text-xs text-muted">/ mo</span>
                     </div>
                     <span className="text-[10px] text-muted">
-                      at 10,000 active users ({result.cost_rows.region})
+                      at {result.cost_rows.userCount.toLocaleString("en-US")} active users ({result.cost_rows.region}) · estimate, not a bill
                     </span>
                   </div>
                 )}
@@ -438,6 +446,7 @@ export default function Home() {
             </div>
 
             {/* Grounding & Warnings Banners */}
+            <EngineBanner engine={result.engine} diagnostics={result.diagnostics} />
             <GroundingBanner grounding={result.grounding} />
             <WarningsBanner warnings={result.warnings} />
 
@@ -631,7 +640,7 @@ export default function Home() {
                   </h3>
                   <AssumptionsDisclosure plan={result.service_plan} />
                   <p className="text-xs text-muted leading-relaxed">
-                    The inference engine applies a two-tier analysis: deterministic signal extraction from manifests/configs, corroborated with structured LLM reasoning to map optimal AWS cloud slots.
+                    Evidence is extracted deterministically from manifests and configs. If an AI provider is configured it describes the application from that evidence; AWS services are always selected by the deterministic rule engine. The mode used is shown above every result.
                   </p>
                 </div>
               )}

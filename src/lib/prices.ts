@@ -130,49 +130,91 @@ export const REGION_USAGE_PREFIX: Record<string, string> = {
 };
 
 // ---------------------------------------------------------------------------
-// Fallback static prices (USD/unit) — used when bulk file fetch fails.
-// Based on us-east-1 public pricing as of 2024-12.
+// Fallback static prices (USD per row unit) — used when a live lookup fails.
+//
+// These are us-east-1 reference values, NOT current prices for other regions.
+// Every fallback row is labelled with FALLBACK_PRICE_REGION and its status
+// from FALLBACK_PRICE_STATUS so the UI never presents them as live quotes.
+// Keys are serviceId, or `${serviceId}:${lineId}` for secondary billing lines.
 // ---------------------------------------------------------------------------
 
+/** Region the fallback table describes. */
+export const FALLBACK_PRICE_REGION = "us-east-1";
+
 export const FALLBACK_PRICES: Record<string, number> = {
-  EC2: 0.023,           // t3.small on-demand $/hr
-  Lambda: 0.0000166667, // $/GB-second
+  EC2: 0.0208,          // t3.small Linux on-demand $/hr (was 0.023 = t2.small)
+  Lambda: 0.0000166667, // $/GB-second (x86)
+  "Lambda:requests": 0.20, // $/million requests
   ECS: 0.04048,         // Fargate $/vCPU-hr
+  "ECS:memory": 0.004445, // Fargate $/GB-hr
   EKS: 0.10,            // $/cluster-hr
   Fargate: 0.04048,     // $/vCPU-hr
+  "Fargate:memory": 0.004445, // $/GB-hr
   Lightsail: 10.0,      // flat $10/mo (already monthly)
-  Batch: 0.04048,       // estimated Spot vCPU-hr
-  S3: 0.023,            // $/GB-month Standard
+  Batch: 0.04048,       // Fargate on-demand $/vCPU-hr (Batch itself is free)
+  S3: 0.023,            // $/GB-month Standard (first 50 TB)
   EBS: 0.08,            // gp3 $/GB-month
   EFS: 0.30,            // Standard $/GB-month
   Glacier: 0.004,       // Instant Retrieval $/GB-month
-  RDS: 0.017,           // db.t3.micro MySQL $/hr
-  DynamoDB: 0.00000025, // On-Demand $/RCU
+  RDS: 0.017,           // db.t3.micro MySQL Single-AZ $/hr
+  "RDS:postgres": 0.018, // db.t3.micro PostgreSQL Single-AZ $/hr
+  "RDS:storage": 0.115, // gp2 $/GB-month Single-AZ
+  DynamoDB: 0.000000125, // On-Demand $/read request unit ($0.125/M since 2024-11-01; was $0.25/M)
+  "DynamoDB:writes": 0.000000625, // On-Demand $/write request unit ($0.625/M)
   ElastiCache: 0.017,   // cache.t3.micro $/hr
   Aurora: 0.12,         // Serverless v2 $/ACU-hr
   Redshift: 0.25,       // dc2.large $/hr
-  DocumentDB: 0.033,    // db.t3.medium $/hr
-  CloudFront: 0.0085,   // $/GB egress (US)
-  APIGateway: 3.50,     // $/million REST calls
-  ALB: 0.0225,         // base $/ALB-hr (was LCU-only rate)
+  DocumentDB: 0.033,    // db.t3.medium $/hr — UNVERIFIED, see FALLBACK_PRICE_STATUS
+  CloudFront: 0.085,    // $/GB US egress, first 10 TB (was 0.0085 — 10× too low)
+  APIGateway: 1.00,     // $/million HTTP API calls (matches the ApiGatewayV2 CFN export)
+  ALB: 0.0225,          // $/ALB-hr (LCU charges excluded)
   Route53: 0.50,        // $/hosted zone/mo (already monthly)
   CloudWatchLogs: 0.50, // $/GB ingested
-  VPC: 0.01,            // $/endpoint-hr
+  "CloudWatch:logs": 0.50, // $/GB ingested
   NATGateway: 0.045,    // $/hr
   SQS: 0.40,            // $/million requests (Standard)
   SNS: 0.50,            // $/million publishes
-  EventBridge: 1.00,    // $/million events
+  EventBridge: 1.00,    // $/million custom events
   Kinesis: 0.015,       // $/shard-hr
-  Cognito: 0.0055,      // $/MAU (after 50k free tier)
+  Cognito: 0.0055,      // $/MAU, Lite tier, after the free tier
   CloudWatch: 0.30,     // $/metric/month
   CodePipeline: 1.00,   // $/active pipeline/mo (already monthly)
   ECR: 0.10,            // $/GB-month
-  SageMaker: 0.046,     // ml.t3.medium $/hr
+  SageMaker: 0.046,     // ml.t3.medium $/hr — UNVERIFIED
   Rekognition: 0.001,   // $/image
   Comprehend: 0.0001,   // $/unit (100 chars)
   SES: 0.0001,          // $/email
   Amplify: 0.01,        // $/build-minute
+  SecretsManager: 0.40, // $/secret-month
+  WAF: 5.00,            // $/web ACL-month (rules and requests excluded)
 };
+
+/**
+ * Provenance of each fallback value. "verified-2026-10" values were checked
+ * against published AWS pricing during the October 2026 audit; "reference"
+ * values are the repository's original us-east-1 figures (dated 2024-12) and
+ * have not been re-verified; "unverified" values are known to be doubtful.
+ * Services absent from FALLBACK_PRICES have NO fallback: when the live lookup
+ * fails they are reported as unpriced instead of costing $0.
+ */
+export type FallbackPriceStatus = "verified-2026-10" | "reference" | "unverified";
+
+export const FALLBACK_PRICE_STATUS: Record<string, FallbackPriceStatus> = {
+  EC2: "verified-2026-10",
+  ECS: "verified-2026-10",
+  "ECS:memory": "verified-2026-10",
+  Fargate: "verified-2026-10",
+  "Fargate:memory": "verified-2026-10",
+  CloudFront: "verified-2026-10",
+  DynamoDB: "verified-2026-10",
+  "DynamoDB:writes": "verified-2026-10",
+  DocumentDB: "unverified",
+  SageMaker: "unverified",
+};
+
+export function fallbackPriceStatus(key: string): FallbackPriceStatus {
+  return FALLBACK_PRICE_STATUS[key] ?? "reference";
+}
 
 // ---------------------------------------------------------------------------
 // Cache
@@ -218,10 +260,56 @@ const PRICING_BASE = "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws";
  * The bulk files are large (MB+); we cap the response to 2 MB to avoid
  * excessive memory usage and use a 5-second timeout.
  */
+/** Bulk index files above this size are skipped rather than parsed partially. */
+const BULK_MAX_BYTES = 8 * 1024 * 1024;
+
+type BulkProduct = { sku: string; productFamily?: string; attributes: Record<string, string> };
+type BulkDimension = { pricePerUnit: { USD: string }; beginRange?: string; unit?: string };
+type BulkTerms = Record<string, Record<string, { priceDimensions: Record<string, BulkDimension> }>>;
+
+/**
+ * Picks the on-demand price for the first SKU whose usagetype contains
+ * `usageTypePrefix` and whose attributes match `attributeFilters`. For tiered
+ * prices the FIRST paid tier (lowest beginRange with a non-zero price) is
+ * used, rather than whichever dimension the object happens to list first.
+ * Exported for tests.
+ */
+export function selectBulkPrice(
+  data: { products?: Record<string, BulkProduct>; terms?: { OnDemand?: BulkTerms } },
+  usageTypePrefix: string,
+  attributeFilters?: Record<string, string>
+): number | null {
+  for (const [sku, product] of Object.entries(data.products ?? {})) {
+    const attrs = product.attributes ?? {};
+    const usageType = attrs.usagetype ?? "";
+    if (!usageType.includes(usageTypePrefix)) continue;
+    if (attributeFilters) {
+      const ok = Object.entries(attributeFilters).every(([k, v]) =>
+        k === "productFamily" ? product.productFamily === v || attrs[k] === v : attrs[k] === v
+      );
+      if (!ok) continue;
+    }
+    const onDemandTerms = data.terms?.OnDemand?.[sku];
+    if (!onDemandTerms) continue;
+    let best: { begin: number; usd: number } | null = null;
+    for (const term of Object.values(onDemandTerms)) {
+      for (const dim of Object.values(term.priceDimensions ?? {})) {
+        const usd = parseFloat(dim.pricePerUnit?.USD ?? "0");
+        if (!(usd > 0)) continue;
+        const begin = parseFloat(dim.beginRange ?? "0") || 0;
+        if (!best || begin < best.begin) best = { begin, usd };
+      }
+    }
+    if (best) return best.usd;
+  }
+  return null;
+}
+
 export async function fetchBulkPrice(
   serviceCode: string,
   usageTypePrefix: string,
-  region: string
+  region: string,
+  attributeFilters?: Record<string, string>
 ): Promise<number | null> {
   const regionPath = REGION_PATH[region] ?? "us-east-1";
   const url = `${PRICING_BASE}/${serviceCode}/current/${regionPath}/index.json`;
@@ -233,53 +321,34 @@ export async function fetchBulkPrice(
     const res = await fetch(url, { signal: controller.signal });
     if (!res.ok) return null;
 
-    // Read body as text, capped at 2 MB
+    // Large regional index files (EC2 is hundreds of MB) cannot be parsed
+    // from a prefix: the previous code read the first 2 MB and called
+    // JSON.parse on the truncated text, which always threw — so "live"
+    // pricing silently never worked for those services. Skip them cleanly.
+    const declared = Number(res.headers.get("content-length") ?? "NaN");
+    if (Number.isFinite(declared) && declared > BULK_MAX_BYTES) {
+      await res.body?.cancel().catch(() => undefined);
+      return null;
+    }
     const reader = res.body?.getReader();
     if (!reader) return null;
 
+    const decoder = new TextDecoder("utf-8");
     let raw = "";
     let bytesRead = 0;
-    const MAX_BYTES = 2 * 1024 * 1024;
-
-    while (bytesRead < MAX_BYTES) {
+    while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      raw += new TextDecoder().decode(value);
       bytesRead += value.byteLength;
-    }
-    reader.cancel();
-
-    // Parse JSON and extract first matching on-demand price
-    // Bulk pricing JSON structure:
-    //   { products: { sku: { attributes: { usagetype, ... } } },
-    //     terms: { OnDemand: { sku: { offerTermCode: { priceDimensions: { ... } } } } } }
-    const data = JSON.parse(raw) as {
-      products: Record<string, { sku: string; attributes: Record<string, string> }>;
-      terms: {
-        OnDemand: Record<
-          string,
-          Record<string, { priceDimensions: Record<string, { pricePerUnit: { USD: string } }> }>
-        >;
-      };
-    };
-
-    // Find first product whose usagetype contains the prefix
-    for (const [sku, product] of Object.entries(data.products)) {
-      const usageType = product.attributes?.usagetype ?? "";
-      if (usageType.includes(usageTypePrefix)) {
-        // Get on-demand price
-        const onDemandTerms = data.terms?.OnDemand?.[sku];
-        if (onDemandTerms) {
-          for (const term of Object.values(onDemandTerms)) {
-            for (const dim of Object.values(term.priceDimensions)) {
-              const usd = parseFloat(dim.pricePerUnit?.USD ?? "0");
-              if (usd > 0) return usd;
-            }
-          }
-        }
+      if (bytesRead > BULK_MAX_BYTES) {
+        await reader.cancel().catch(() => undefined);
+        return null;
       }
+      raw += decoder.decode(value, { stream: true });
     }
-    return null;
+    raw += decoder.decode();
+
+    return selectBulkPrice(JSON.parse(raw), usageTypePrefix, attributeFilters);
   } catch {
     return null;
   } finally {
@@ -338,25 +407,26 @@ export function extractPriceFromPriceList(
         continue;
       }
 
-      const onDemandTerms = item?.terms?.OnDemand;
+      type Dim = { pricePerUnit?: { USD?: string } };
+      type Term = { priceDimensions?: Record<string, Dim> };
+      const firstPaid = (dims: Record<string, Dim> | undefined): number | null => {
+        for (const dim of Object.values(dims ?? {})) {
+          const usd = parseFloat(dim?.pricePerUnit?.USD ?? "0");
+          if (usd > 0) return usd;
+        }
+        return null;
+      };
+      const onDemandTerms = item?.terms?.OnDemand as Record<string, Term | Record<string, Term>> | undefined;
       if (onDemandTerms) {
-        for (const termOrSku of Object.values(onDemandTerms) as any[]) {
+        for (const termOrSku of Object.values(onDemandTerms)) {
           // Format 1: Direct offer term with priceDimensions
-          if (termOrSku?.priceDimensions) {
-            for (const dim of Object.values(termOrSku.priceDimensions) as any[]) {
-              const usd = parseFloat(dim?.pricePerUnit?.USD ?? "0");
-              if (usd > 0) return usd;
-            }
-          }
+          const direct = firstPaid((termOrSku as Term)?.priceDimensions);
+          if (direct !== null) return direct;
           // Format 2: Keyed by SKU containing offer terms
           if (typeof termOrSku === "object" && termOrSku !== null) {
-            for (const inner of Object.values(termOrSku) as any[]) {
-              if (inner?.priceDimensions) {
-                for (const dim of Object.values(inner.priceDimensions) as any[]) {
-                  const usd = parseFloat(dim?.pricePerUnit?.USD ?? "0");
-                  if (usd > 0) return usd;
-                }
-              }
+            for (const inner of Object.values(termOrSku as Record<string, Term>)) {
+              const nested = firstPaid(inner?.priceDimensions);
+              if (nested !== null) return nested;
             }
           }
         }
@@ -465,6 +535,15 @@ export interface PriceLookupResult {
   source: "live" | "fallback";
 }
 
+export interface PriceLookupOptions {
+  /** Converts the Price List unit (e.g. per request) into the row unit (per million). */
+  livePriceMultiplier?: number;
+  /** SKU attributes that must match (databaseEngine, operatingSystem, …). */
+  attributeFilters?: Record<string, string>;
+  /** Fallback-table key when it differs from serviceId (e.g. "RDS:postgres"). */
+  fallbackKey?: string;
+}
+
 /**
  * Gets the unit price for a service in a given region.
  *
@@ -496,15 +575,26 @@ export const LIVE_PRICE_CAPS: Record<string, number> = {
   DynamoDB: 0.01,
 };
 
+/** Fallback results are cached briefly so a transient outage is retried soon. */
+const FALLBACK_CACHE_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * Returns the unit price in the ROW's unit, or `null` when neither a live
+ * price nor a fallback reference price exists. Callers must treat null as
+ * "unpriced" — previously a missing fallback returned 0, so MSK, OpenSearch,
+ * Secrets Manager and WAF were shown as costing $0.00.
+ */
 export async function getUnitPrice(
   serviceId: string,
   serviceCode: string | null,
   usageTypePrefix: string | null,
   region: string,
-  sourceMode?: PriceSourceMode
-): Promise<PriceLookupResult> {
+  sourceMode?: PriceSourceMode,
+  options: PriceLookupOptions = {}
+): Promise<PriceLookupResult | null> {
   const mode = sourceMode ?? getPriceSourceMode();
-  const key = cacheKey(region, serviceId, mode);
+  const fallbackKey = options.fallbackKey ?? serviceId;
+  const key = cacheKey(region, fallbackKey, mode);
 
   // Check cache
   const cached = cacheGet(key);
@@ -514,10 +604,11 @@ export async function getUnitPrice(
 
   // Try live fetch
   if (serviceCode && usageTypePrefix) {
-    const livePrice =
+    const rawLive =
       mode === "sdk"
         ? await fetchSdkPrice(serviceCode, usageTypePrefix, region)
-        : await fetchBulkPrice(serviceCode, usageTypePrefix, region);
+        : await fetchBulkPrice(serviceCode, usageTypePrefix, region, options.attributeFilters);
+    const livePrice = rawLive !== null ? rawLive * (options.livePriceMultiplier ?? 1) : null;
 
     if (livePrice !== null && livePrice > 0) {
       const cap = LIVE_PRICE_CAPS[serviceId];
@@ -532,9 +623,12 @@ export async function getUnitPrice(
     }
   }
 
-  // Fallback
-  const fallback = FALLBACK_PRICES[serviceId] ?? 0;
-  cacheSet(key, fallback, "fallback");
+  // Fallback (us-east-1 reference value) — or nothing at all.
+  const fallback = FALLBACK_PRICES[fallbackKey] ?? FALLBACK_PRICES[serviceId];
+  if (fallback === undefined || !(fallback > 0)) {
+    return null;
+  }
+  PRICE_CACHE.set(key, { price: fallback, source: "fallback", expiresAt: Date.now() + FALLBACK_CACHE_TTL_MS });
   return { price: fallback, source: "fallback" };
 }
 

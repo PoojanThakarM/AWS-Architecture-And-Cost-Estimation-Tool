@@ -9,8 +9,13 @@
  *
  * Provider chain — tried IN ORDER until one returns a model. This is failover,
  * not precedence.
- *   1. GOOGLE_API_KEY       → gemini-3.8-flash              (@ai-sdk/google)
- *   2. OPENROUTER_API_KEY   → OpenRouter free models        (@openrouter/ai-sdk-provider)
+ *   1. GOOGLE_API_KEY (or GOOGLE_GENERATIVE_AI_API_KEY, the AI SDK's own name)
+ *        → GOOGLE_MODEL, default "gemini-3.8-flash"       (@ai-sdk/google)
+ *   2. OPENROUTER_API_KEY   → OPENROUTER_MODELS (comma-separated), default
+ *        free models listed in MODEL_IDS                   (@openrouter/ai-sdk-provider)
+ *
+ * DeepSeek and Groq are NOT implemented (no provider package is installed);
+ * earlier docs listing DEEPSEEK_API_KEY / GROQ_API_KEY were inaccurate.
  *
  * Failure is never silent. analyzeArchitecture returns a discriminated
  * LlmArchitectureResult carrying the reason and per-provider diagnostics, so
@@ -46,7 +51,7 @@ const MODEL_IDS = {
   ],
 } as const;
 
-interface ProviderConfig {
+export interface ProviderConfig {
   name: string;
   model: string;
   /**
@@ -65,20 +70,37 @@ interface ProviderConfig {
  * tries the next provider when one throws. A configured-but-dead key used to
  * make the whole LLM path unavailable.
  */
+/** Reads a key, treating blank/whitespace values as "not set". */
+function envKey(...names: string[]): string | null {
+  for (const n of names) {
+    const v = process.env[n]?.trim();
+    if (v) return v;
+  }
+  return null;
+}
+
 function resolveProviders(): ProviderConfig[] {
   const providers: ProviderConfig[] = [];
 
-  if (process.env.GOOGLE_API_KEY) {
-    const client = createGoogleGenerativeAI({ apiKey: process.env.GOOGLE_API_KEY });
+  const googleKey = envKey("GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY");
+  if (googleKey) {
+    const client = createGoogleGenerativeAI({ apiKey: googleKey });
+    const modelId = process.env.GOOGLE_MODEL?.trim() || MODEL_IDS.google;
     providers.push({
       name: "google",
-      model: MODEL_IDS.google,
-      getModel: () => client(MODEL_IDS.google),
+      model: modelId,
+      getModel: () => client(modelId),
     });
   }
-  if (process.env.OPENROUTER_API_KEY) {
-    const client = createOpenRouter({ apiKey: process.env.OPENROUTER_API_KEY });
-    for (const modelId of MODEL_IDS.openrouter) {
+  const openRouterKey = envKey("OPENROUTER_API_KEY");
+  if (openRouterKey) {
+    const client = createOpenRouter({ apiKey: openRouterKey });
+    const configured = (process.env.OPENROUTER_MODELS ?? "")
+      .split(",")
+      .map((m) => m.trim())
+      .filter(Boolean);
+    const modelIds = configured.length > 0 ? configured : [...MODEL_IDS.openrouter];
+    for (const modelId of modelIds) {
       providers.push({
         name: "openrouter",
         model: modelId,
@@ -92,6 +114,19 @@ function resolveProviders(): ProviderConfig[] {
 
 export function llmConfigured(): boolean {
   return resolveProviders().length > 0;
+}
+
+/**
+ * Removes anything that looks like a credential from a provider error message
+ * before it reaches logs or the API response (diagnostics are returned to the
+ * browser). Provider SDK errors can echo request URLs (`?key=...`) and headers.
+ */
+export function redactSecrets(message: string): string {
+  return message
+    .replace(/([?&](?:key|api_key|apikey|token|access_token)=)[^&\s"']+/gi, "$1[redacted]")
+    .replace(/((?:authorization|x-goog-api-key|api-key|x-api-key)["']?\s*[:=]\s*["']?)(?:bearer\s+)?[^\s"',}]+/gi, "$1[redacted]")
+    .replace(/\b(?:sk-or-v1-|sk-|gsk_|AIza|ghp_|github_pat_)[A-Za-z0-9_\-]{8,}/g, "[redacted]")
+    .replace(/\b(?=[A-Za-z0-9_\-]{32,}\b)(?=[A-Za-z0-9_\-]*\d)(?=[A-Za-z0-9_\-]*[A-Za-z])[A-Za-z0-9_\-]{32,}\b/g, "[redacted]");
 }
 
 // ---------------------------------------------------------------------------
@@ -289,6 +324,27 @@ export type LlmArchitectureResult =
       diagnostics: Diagnostic[];
     };
 
+/**
+ * Repairs the most common malformed structured output from chat models:
+ * JSON wrapped in ```json fences or surrounded by prose. Returns null when no
+ * JSON object can be recovered (the SDK then reports the original error).
+ * Repair only changes framing — the result is still schema-validated.
+ */
+export function extractJsonObject(text: string): string | null {
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const body = (fenced ? fenced[1] : text).trim();
+  const start = body.indexOf("{");
+  const end = body.lastIndexOf("}");
+  if (start === -1 || end <= start) return null;
+  const candidate = body.slice(start, end + 1);
+  try {
+    JSON.parse(candidate);
+    return candidate;
+  } catch {
+    return null;
+  }
+}
+
 /** How long a single provider attempt may take before we move to the next one. */
 const LLM_TIMEOUT_MS = 60_000;
 
@@ -300,17 +356,24 @@ const LLM_TIMEOUT_MS = 60_000;
  * forward those into the API response so an LLM outage is visible to the user
  * instead of appearing as an unusually thin but confident inference.
  */
-export async function analyzeArchitecture(opts: {
-  signals: RepoSignals | null;
-  description: string;
-  inputKind: "github_url" | "description";
-  grounding: Grounding;
-  profile?: ProjectProfile | null;
-  /** Overall pipeline deadline; aborts the in-flight provider call. */
-  signal?: AbortSignal;
-}): Promise<LlmArchitectureResult> {
+export async function analyzeArchitecture(
+  opts: {
+    signals: RepoSignals | null;
+    description: string;
+    inputKind: "github_url" | "description";
+    grounding: Grounding;
+    profile?: ProjectProfile | null;
+    /** Overall pipeline deadline; aborts the in-flight provider call. */
+    signal?: AbortSignal;
+  },
+  /**
+   * Test seam: inject providers (e.g. the AI SDK's MockLanguageModel) so the
+   * failure/fallback paths can be exercised without network or paid calls.
+   */
+  deps?: { providers?: ProviderConfig[]; timeoutMs?: number }
+): Promise<LlmArchitectureResult> {
   const diagnostics: Diagnostic[] = [];
-  const providers = resolveProviders();
+  const providers = deps?.providers ?? resolveProviders();
 
   if (providers.length === 0) {
     diagnostics.push({
@@ -337,7 +400,7 @@ export async function analyzeArchitecture(opts: {
     null;
 
   for (const provider of providers) {
-    const timeout = AbortSignal.timeout(LLM_TIMEOUT_MS);
+    const timeout = AbortSignal.timeout(deps?.timeoutMs ?? LLM_TIMEOUT_MS);
     const abort = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout;
 
     try {
@@ -349,9 +412,14 @@ export async function analyzeArchitecture(opts: {
         temperature: 0,
         maxRetries: 3,
         abortSignal: abort,
+        repairText: async ({ text }) => extractJsonObject(text),
       });
 
-      const validation = validateArchitectureModel(raw, opts.profile?.evidenceRegister);
+      // Repository path: citations are checked against the evidence register.
+      // Description path: against the description text itself.
+      const register = opts.profile?.evidenceRegister;
+      const corpus = register && register.length > 0 ? undefined : opts.description;
+      const validation = validateArchitectureModel(raw, register, corpus);
       if (validation.model) {
         return { model: validation.model, error: null, provider: provider.name, diagnostics };
       }
@@ -367,7 +435,7 @@ export async function analyzeArchitecture(opts: {
         detail: validation.detail,
       });
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = redactSecrets(err instanceof Error ? err.message : String(err));
       console.warn(
         `[llmClient] ${provider.name}/${provider.model} architecture call failed:`,
         message

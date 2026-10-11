@@ -28,7 +28,16 @@ export interface AlternateProposalConfig {
   /** Services swapped or introduced in the alternate */
   serviceModifications: {
     remove?: ServiceId[];
-    add: Array<{ serviceId: ServiceId; reason: string }>;
+    add: Array<{
+      serviceId: ServiceId;
+      reason: string;
+      /**
+       * Skip this addition when the plan already has one of these services.
+       * Without it the serverless alternate added DynamoDB NEXT TO an existing
+       * RDS/DocumentDB — two databases for one application.
+       */
+      unlessPresent?: ServiceId[];
+    }>;
   };
 }
 
@@ -77,11 +86,14 @@ export const CURATED_ALTERNATE_PAIRS: Partial<Record<PatternId, AlternateProposa
     description:
       "Containers on ECS/Fargate eliminate cold starts and maintain persistent connection pools for predictable high-throughput APIs, but incur fixed baseline monthly spend. The serverless alternate scales compute strictly to $0 when idle, ideal for variable or bursty workloads at the cost of cold-start latency.",
     serviceModifications: {
-      remove: ["ECS", "Fargate", "EKS", "ALB"],
+      // ECR goes with the containers it served. The alternate swaps COMPUTE
+      // only: the project's own data stores are kept, and no database is
+      // added where the evidence shows none (it previously added DynamoDB to
+      // apps with no database, or next to an existing RDS).
+      remove: ["ECS", "Fargate", "EKS", "ALB", "ECR"],
       add: [
         { serviceId: "Lambda", reason: "Event-driven compute that scales to zero when idle" },
         { serviceId: "APIGateway", reason: "Serverless HTTP API ingress routing" },
-        { serviceId: "DynamoDB", reason: "Serverless on-demand NoSQL database" },
       ],
     },
   },
@@ -120,7 +132,10 @@ export function buildAlternateProposal(
     }));
 
   for (const toAdd of config.serviceModifications.add) {
-    if (!remainingServices.some((s) => s.serviceId === toAdd.serviceId)) {
+    const blocked = (toAdd.unlessPresent ?? []).some((id) =>
+      remainingServices.some((s) => s.serviceId === id)
+    );
+    if (!blocked && !remainingServices.some((s) => s.serviceId === toAdd.serviceId)) {
       remainingServices.push({
         serviceId: toAdd.serviceId,
         confidence: "medium" as const,

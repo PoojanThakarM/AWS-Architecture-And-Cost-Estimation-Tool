@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useCallback } from "react";
+import React, { useState } from "react";
 import type { CostResult } from "@/lib/cost";
 import type { ServicePlan } from "@/lib/schema";
 import { scaleCostRows } from "@/lib/cost";
@@ -46,8 +46,15 @@ function formatUserCount(n: number): string {
 }
 
 function formatUsd(n: number): string {
+  if (n === 0) return "$0.00";
   if (n < 0.01) return "< $0.01";
   return `$${n.toFixed(2)}`;
+}
+
+/** Display-only rounding; calculations keep full precision. */
+function formatUnitPrice(n: number): string {
+  if (n >= 0.01) return `$${n.toFixed(n >= 1 ? 2 : 4)}`;
+  return `$${n.toPrecision(3)}`;
 }
 
 function logToLinear(logVal: number): number {
@@ -74,8 +81,7 @@ export function CostCalculator({
   const scaledCost = scaleCostRows(costData, displayedUserCount);
 
   // Region change handler -> POST /api/prices
-  const handleRegionChange = useCallback(
-    async (newRegion: string) => {
+  const handleRegionChange = async (newRegion: string) => {
       setRegion(newRegion);
       setIsRefetching(true);
       setRefetchError(null);
@@ -101,9 +107,7 @@ export function CostCalculator({
       } finally {
         setIsRefetching(false);
       }
-    },
-    [servicePlan, displayedUserCount]
-  );
+  };
 
   const currentRegionLabel =
     REGIONS.find((r) => r.value === region)?.label ?? region;
@@ -202,7 +206,8 @@ export function CostCalculator({
               AWS Target Deployment Region
             </span>
             <p className="text-[11px] text-muted">
-              Live unit rates are queried from the AWS Price List API for this region
+              Live unit rates are queried from the AWS Price List API for this region; rows marked
+              &ldquo;fallback&rdquo; use us-east-1 reference prices
             </p>
           </div>
         </div>
@@ -243,7 +248,7 @@ export function CostCalculator({
       <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-md">
         <div className="flex items-center justify-between border-b border-border px-5 py-3.5">
           <h4 className="text-xs font-semibold uppercase tracking-wider text-muted">
-            Service Cost Breakdown ({scaledCost.rows.length} priced services)
+            Service Cost Breakdown ({scaledCost.rows.length} billing lines)
           </h4>
           <div className="flex items-center gap-2">
             <span className="inline-flex items-center gap-1 rounded-full bg-accent/10 px-2.5 py-0.5 text-[10px] font-medium text-accent">
@@ -268,15 +273,18 @@ export function CostCalculator({
             <tbody className="divide-y divide-border/60 bg-transparent">
               {scaledCost.rows.map((row) => (
                 <tr
-                  key={`${row.componentId}-${row.serviceId}`}
+                  key={`${row.componentId}-${row.serviceId}-${row.lineId ?? "primary"}`}
                   className="transition-colors hover:bg-surface-2/40"
                 >
                   <td className="whitespace-nowrap px-5 py-3.5">
                     <div className="font-semibold text-foreground">
                       {row.serviceId}
+                      {row.lineId && <span className="ml-1 font-normal text-muted">({row.lineId})</span>}
                     </div>
-                    <div className="text-[11px] text-muted">
-                      {row.componentId} · {row.annotation}
+                    <div className="text-[11px] text-muted whitespace-normal max-w-md">
+                      {row.annotation}
+                      {row.freeTierQuantity ? ` · free tier ${row.freeTierQuantity.toLocaleString("en-US")} applied` : ""}
+                      {row.excludes ? ` · excludes: ${row.excludes}` : ""}
                     </div>
                   </td>
                   <td className="whitespace-nowrap px-4 py-3.5 text-xs text-muted">
@@ -290,7 +298,8 @@ export function CostCalculator({
                       : row.quantity.toFixed(1)}
                   </td>
                   <td className="whitespace-nowrap px-4 py-3.5 text-right font-mono text-xs text-muted-foreground">
-                    ${row.unitPrice.toPrecision(4)}
+                    {formatUnitPrice(row.unitPrice)}
+                    {row.priceUnit && <div className="text-[10px] text-muted">{row.priceUnit}</div>}
                   </td>
                   <td className="whitespace-nowrap px-5 py-3.5 text-right font-mono text-sm font-semibold text-foreground">
                     {formatUsd(row.monthlyUsd)}
@@ -304,11 +313,11 @@ export function CostCalculator({
                       }`}
                       title={
                         row.priceSource === "live"
-                          ? "Fetched live via AWS Price List API"
-                          : "Static catalog benchmark fallback"
+                          ? `Fetched live via AWS Price List API for ${row.priceRegion ?? region}`
+                          : `Reference price for ${row.priceRegion ?? "us-east-1"} (${row.fallbackStatus ?? "reference"}) — live price unavailable`
                       }
                     >
-                      {row.priceSource === "live" ? "live aws" : "fallback"}
+                      {row.priceSource === "live" ? "live aws" : `fallback · ${row.priceRegion ?? "us-east-1"}`}
                     </span>
                   </td>
                 </tr>
@@ -320,7 +329,7 @@ export function CostCalculator({
                   colSpan={4}
                   className="px-5 py-4 text-sm font-semibold text-foreground"
                 >
-                  Estimated Monthly Total ({scaledCost.rows.length} services)
+                  Estimated Monthly Total ({new Set(scaledCost.rows.map((r) => r.serviceId)).size} services)
                 </td>
                 <td className="px-5 py-4 text-right text-lg font-bold text-accent font-mono">
                   {formatUsd(scaledCost.totalMonthlyUsd)}
@@ -337,12 +346,12 @@ export function CostCalculator({
         <div className="rounded-2xl border border-border bg-surface-2/40 p-4 backdrop-blur-md">
           <div className="flex items-center gap-2 text-xs font-semibold text-muted">
             <Info className="h-4 w-4 text-accent" />
-            <span>Infrastructure components without direct monthly unit billing:</span>
+            <span>Not included in the total (no charge, or no price available):</span>
           </div>
           <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-            {scaledCost.unpricedRows.map((r) => (
+            {scaledCost.unpricedRows.map((r, i) => (
               <div
-                key={r.serviceId}
+                key={`${r.serviceId}-${i}`}
                 className="flex items-start gap-2 rounded-xl bg-surface/60 p-2.5 text-xs text-muted border border-border/50"
               >
                 <span className="font-semibold text-foreground">
@@ -355,10 +364,22 @@ export function CostCalculator({
         </div>
       )}
 
+      {/* Assumptions */}
+      {scaledCost.assumptions && scaledCost.assumptions.length > 0 && (
+        <details className="rounded-2xl border border-border bg-surface-2/40 p-4 text-xs text-muted">
+          <summary className="cursor-pointer font-semibold">Cost assumptions ({scaledCost.assumptions.length})</summary>
+          <ul className="mt-2 list-disc space-y-1 pl-5">
+            {scaledCost.assumptions.map((a) => (
+              <li key={a}>{a}</li>
+            ))}
+          </ul>
+        </details>
+      )}
+
       {/* Disclaimer */}
       <div className="rounded-xl border border-border/60 bg-surface/30 px-4 py-3 text-center text-xs text-muted/70">
         <p>
-          <strong className="text-foreground/80">Estimation Advisory:</strong> This estimate is modeled from baseline architectural usage and standard On-Demand pricing. It does not include free tier allowances, Savings Plans, Reserved Instances, or data egress fees. For formal production quotes, refer to the{" "}
+          <strong className="text-foreground/80">Estimation Advisory:</strong> This is a planning estimate, not a bill. It uses baseline usage assumptions and On-Demand pricing; free tiers are applied only where a row says so, and Savings Plans, Reserved Instances, taxes and most data-transfer charges are excluded. Actual charges depend on region, configuration and utilisation. For formal quotes, refer to the{" "}
           <a
             href="https://calculator.aws"
             target="_blank"

@@ -12,6 +12,7 @@
 
 import { runRuleEngine } from "./ruleEngine.ts";
 import { analyzeArchitecture, llmConfigured } from "./llmClient.ts";
+import type { ProviderConfig } from "./llmClient.ts";
 import { mapArchitectureModelToServicePlan } from "./architecture.ts";
 import type { ArchitectureModel } from "./architecture.ts";
 import {
@@ -71,6 +72,11 @@ export interface InferenceInput {
   profile?: ProjectProfile | null;
   /** Overall request deadline, forwarded to the LLM call. */
   signal?: AbortSignal;
+  /**
+   * Test seam: explicit LLM providers (e.g. AI SDK mock models). When given,
+   * they replace the environment-configured providers.
+   */
+  llmProviders?: ProviderConfig[];
 }
 
 export interface InferenceResult {
@@ -136,15 +142,20 @@ export async function runInference(input: InferenceInput): Promise<InferenceResu
 
   // Fallback: deterministic rule engine (no LLM configured, or LLM failed).
   const baseline = (engine: PipelineEngine): InferenceResult => {
-    const basePlan = runRuleEngine({ ...ruleInput, profile: profile ?? undefined });
+    const rawPlan = runRuleEngine({ ...ruleInput, profile: profile ?? ruleInput.profile });
+    // Decision 19 applies to BOTH paths. The rules baseline used to skip the
+    // cap, so a description-only result showed "high" confidence badges.
+    const basePlan = applyGroundingCap(rawPlan, ruleInput.grounding);
+    const rawProposals =
+      rawPlan.proposals && rawPlan.proposals.length > 0 ? rawPlan.proposals : [rawPlan];
+    const plans = rawProposals.map((p) => detachProposal(applyGroundingCap(p, ruleInput.grounding)));
+    basePlan.proposals = plans;
     pushTerminalStateDiagnostic(basePlan, diagnostics);
-    const plans =
-      basePlan.proposals && basePlan.proposals.length > 0 ? basePlan.proposals : [basePlan];
     return { plan: basePlan, plans, architectureModel: null, engine, diagnostics };
   };
 
   // Central reasoning path requires an LLM provider.
-  const llmAvailable = llmConfigured();
+  const llmAvailable = input.llmProviders ? input.llmProviders.length > 0 : llmConfigured();
 
   // 1. LLM builds the architecture model of the whole repo/system.
   const llm = await analyzeArchitecture({
@@ -154,7 +165,7 @@ export async function runInference(input: InferenceInput): Promise<InferenceResu
     grounding: ruleInput.grounding,
     profile: profile ?? null,
     signal: input.signal,
-  });
+  }, input.llmProviders ? { providers: input.llmProviders } : undefined);
   diagnostics.push(...llm.diagnostics);
 
   // 2. On failure fall back to rules, but record WHICH kind of failure it was.

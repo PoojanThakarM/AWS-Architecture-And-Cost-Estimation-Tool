@@ -10,7 +10,8 @@
     "test": "node --experimental-strip-types --test src/lib/__tests__/*.test.ts",
     "test:baseline": "node --experimental-strip-types src/lib/__tests__/baseline-check.ts",
     "test:baseline:v2": "node --experimental-strip-types src/lib/__tests__/baseline-check.ts --v2 --rules-only",
-    "test:e2e-repos": "tsx scripts/e2e-test/run.ts"
+    "test:e2e-repos": "tsx scripts/e2e-test/run.ts",
+    "cfn:templates": "node --experimental-strip-types scripts/cfn-templates.ts out/cfn"
   },
   "dependencies": {
     "@ai-sdk/google": "^4.0.67",

@@ -1,0 +1,12 @@
+https://github.com/dockersamples/example-voting-app
+https://github.com/GoogleCloudPlatform/microservices-demo
+https://github.com/spring-projects/spring-petclinic
+https://github.com/gothinkster/node-express-realworld-example-app
+https://github.com/gothinkster/django-realworld-example-app
+https://github.com/gothinkster/golang-gin-realworld-example-app
+https://github.com/hashicorp/learn-terraform-provision-eks-cluster
+https://github.com/aws-samples/aws-serverless-workshops
+https://github.com/supabase/supabase
+https://github.com/oakserver/oak
+https://github.com/go-kit/examples
+https://github.com/Jaimin-chavda/Decentralized-Voting-System

@@ -1,0 +1,419 @@
+[
+  {
+    "id": 1,
+    "name": "mern-student-mgmt",
+    "url": "https://github.com/elselif/MERN",
+    "engine": "llm",
+    "inferredServices": [
+      "S3 (high)",
+      "CloudFront (high)",
+      "ECS (low)",
+      "DocumentDB (high)"
+    ],
+    "serviceIds": [
+      "S3",
+      "CloudFront",
+      "ECS",
+      "DocumentDB"
+    ],
+    "evidenceCitations": [
+      {
+        "service": "S3",
+        "confidence": "high",
+        "evidence": "component React Frontend (React) → static assets",
+        "isReal": true,
+        "hasNoContainerWarning": false
+      },
+      {
+        "service": "CloudFront",
+        "confidence": "high",
+        "evidence": "component React Frontend (React) → CDN",
+        "isReal": true,
+        "hasNoContainerWarning": false
+      },
+      {
+        "service": "ECS",
+        "confidence": "low",
+        "evidence": "component Express API Server (Express.js) (possible container host, no container evidence)",
+        "isReal": false,
+        "hasNoContainerWarning": true
+      },
+      {
+        "service": "DocumentDB",
+        "confidence": "high",
+        "evidence": "component MongoDB (MongoDB)",
+        "isReal": true,
+        "hasNoContainerWarning": false
+      }
+    ],
+    "diagramXmlValid": true,
+    "diagramAllServicesNode": true,
+    "diagramMissingServices": [],
+    "totalCostUsd": 101.15559999999999,
+    "detectedDb": "none",
+    "rdsCostLabel": "none",
+    "rdsEngineMatches": "N/A",
+    "cftYamlSaved": true,
+    "cftAllServicesPresent": false,
+    "cftMissingServices": [
+      "DocumentDB"
+    ],
+    "issues": [
+      "ECS inferred with 'no container evidence'"
+    ]
+  },
+  {
+    "repo": {
+      "id": 2,
+      "name": "honours-project-system",
+      "url": "https://github.com/davidm03/honours-project-system"
+    },
+    "insufficientSignal": true,
+    "message": "Couldn't extract enough from this repo — describe it instead."
+  },
+  {
+    "id": 3,
+    "name": "campus-web-firebase",
+    "url": "https://github.com/gdsc-jssstu/campUS-Web",
+    "engine": "llm",
+    "inferredServices": [
+      "S3 (high)",
+      "CloudFront (high)"
+    ],
+    "serviceIds": [
+      "S3",
+      "CloudFront"
+    ],
+    "evidenceCitations": [
+      {
+        "service": "S3",
+        "confidence": "high",
+        "evidence": "component campUS Frontend (React) → static assets",
+        "isReal": true,
+        "hasNoContainerWarning": false
+      },
+      {
+        "service": "CloudFront",
+        "confidence": "high",
+        "evidence": "component campUS Frontend (React) → CDN",
+        "isReal": true,
+        "hasNoContainerWarning": false
+      }
+    ],
+    "diagramXmlValid": true,
+    "diagramAllServicesNode": true,
+    "diagramMissingServices": [],
+    "totalCostUsd": 15.85,
+    "detectedDb": "none",
+    "rdsCostLabel": "none",
+    "rdsEngineMatches": "N/A",
+    "cftYamlSaved": true,
+    "cftAllServicesPresent": true,
+    "cftMissingServices": [],
+    "issues": []
+  },
+  {
+    "id": 4,
+    "name": "yearbook-firebase",
+    "url": "https://github.com/m-ehab2/Yearbook",
+    "engine": "llm",
+    "inferredServices": [
+      "S3 (high)",
+      "CloudFront (high)"
+    ],
+    "serviceIds": [
+      "S3",
+      "CloudFront"
+    ],
+    "evidenceCitations": [
+      {
+        "service": "S3",
+        "confidence": "high",
+        "evidence": "component Yearbook Web App (React) → static assets",
+        "isReal": true,
+        "hasNoContainerWarning": false
+      },
+      {
+        "service": "CloudFront",
+        "confidence": "high",
+        "evidence": "component Yearbook Web App (React) → CDN",
+        "isReal": true,
+        "hasNoContainerWarning": false
+      }
+    ],
+    "diagramXmlValid": true,
+    "diagramAllServicesNode": true,
+    "diagramMissingServices": [],
+    "totalCostUsd": 15.85,
+    "detectedDb": "none",
+    "rdsCostLabel": "none",
+    "rdsEngineMatches": "N/A",
+    "cftYamlSaved": true,
+    "cftAllServicesPresent": true,
+    "cftMissingServices": [],
+    "issues": []
+  },
+  {
+    "id": 5,
+    "name": "springboot-student-backend",
+    "url": "https://github.com/PubuduJ/student-management-system-back-end",
+    "engine": "llm",
+    "inferredServices": [
+      "ECS (low)",
+      "RDS (high)"
+    ],
+    "serviceIds": [
+      "ECS",
+      "RDS"
+    ],
+    "evidenceCitations": [
+      {
+        "service": "ECS",
+        "confidence": "low",
+        "evidence": "component Student Management Backend (Spring Boot) (possible container host, no container evidence)",
+        "isReal": false,
+        "hasNoContainerWarning": true
+      },
+      {
+        "service": "RDS",
+        "confidence": "high",
+        "evidence": "component MySQL Database (MySQL) → RDS (MySQL)",
+        "isReal": true,
+        "hasNoContainerWarning": false
+      }
+    ],
+    "diagramXmlValid": true,
+    "diagramAllServicesNode": true,
+    "diagramMissingServices": [],
+    "totalCostUsd": 41.385600000000004,
+    "detectedDb": "MySQL",
+    "rdsCostLabel": "1 db.t3.micro MySQL instance × 720 h; source: RDS pricing page",
+    "rdsEngineMatches": "Yes (MySQL)",
+    "cftYamlSaved": true,
+    "cftAllServicesPresent": true,
+    "cftMissingServices": [],
+    "issues": [
+      "ECS inferred with 'no container evidence'"
+    ]
+  },
+  {
+    "id": 6,
+    "name": "springboot-student-mgmt",
+    "url": "https://github.com/ankitkumar2020/StudentManagementSystem",
+    "engine": "llm",
+    "inferredServices": [
+      "ECS (low)",
+      "ALB (medium)",
+      "RDS (high)"
+    ],
+    "serviceIds": [
+      "ECS",
+      "ALB",
+      "RDS"
+    ],
+    "evidenceCitations": [
+      {
+        "service": "ECS",
+        "confidence": "low",
+        "evidence": "component Student Management API (Spring Boot) (possible container host, no container evidence)",
+        "isReal": false,
+        "hasNoContainerWarning": true
+      },
+      {
+        "service": "ALB",
+        "confidence": "medium",
+        "evidence": "component Student Management API (Spring Boot) → Application Load Balancer recommendation",
+        "isReal": true,
+        "hasNoContainerWarning": false
+      },
+      {
+        "service": "RDS",
+        "confidence": "high",
+        "evidence": "component MySQL Database (MySQL) → RDS (MySQL)",
+        "isReal": true,
+        "hasNoContainerWarning": false
+      }
+    ],
+    "diagramXmlValid": true,
+    "diagramAllServicesNode": true,
+    "diagramMissingServices": [],
+    "totalCostUsd": 57.58560000000001,
+    "detectedDb": "MySQL",
+    "rdsCostLabel": "1 db.t3.micro MySQL instance × 720 h; source: RDS pricing page",
+    "rdsEngineMatches": "Yes (MySQL)",
+    "cftYamlSaved": true,
+    "cftAllServicesPresent": true,
+    "cftMissingServices": [],
+    "issues": [
+      "ECS inferred with 'no container evidence'"
+    ]
+  },
+  {
+    "id": 7,
+    "name": "php-library-mgmt",
+    "url": "https://github.com/freesourcecode/Library-Management-System-Project-in-PHP-with-Source-Code",
+    "engine": "llm",
+    "inferredServices": [
+      "RDS (high)"
+    ],
+    "serviceIds": [
+      "RDS"
+    ],
+    "evidenceCitations": [
+      {
+        "service": "RDS",
+        "confidence": "high",
+        "evidence": "component Library MySQL Database (MySQL) → RDS (MySQL)",
+        "isReal": true,
+        "hasNoContainerWarning": false
+      }
+    ],
+    "diagramXmlValid": true,
+    "diagramAllServicesNode": true,
+    "diagramMissingServices": [],
+    "totalCostUsd": 12.24,
+    "detectedDb": "none",
+    "rdsCostLabel": "1 db.t3.micro MySQL instance × 720 h; source: RDS pricing page",
+    "rdsEngineMatches": "Label: 1 db.t3.micro MySQL instance × 720 h; source: RDS pricing page (detected: none)",
+    "cftYamlSaved": true,
+    "cftAllServicesPresent": true,
+    "cftMissingServices": [],
+    "issues": []
+  },
+  {
+    "id": 8,
+    "name": "flask-placement-ml",
+    "url": "https://github.com/saravanaganesh7/Placement_Project",
+    "engine": "rules-fallback",
+    "inferredServices": [
+      "SageMaker (high)",
+      "ALB (medium)",
+      "S3 (medium)",
+      "CloudWatch (medium)"
+    ],
+    "serviceIds": [
+      "SageMaker",
+      "ALB",
+      "S3",
+      "CloudWatch"
+    ],
+    "evidenceCitations": [
+      {
+        "service": "SageMaker",
+        "confidence": "high",
+        "evidence": "Machine learning inference endpoint detected → Amazon SageMaker Endpoint",
+        "isReal": true,
+        "hasNoContainerWarning": false
+      },
+      {
+        "service": "ALB",
+        "confidence": "medium",
+        "evidence": "Load balancer for inference API traffic → ALB",
+        "isReal": true,
+        "hasNoContainerWarning": false
+      },
+      {
+        "service": "S3",
+        "confidence": "medium",
+        "evidence": "Model weights and serialized artifact storage → S3",
+        "isReal": true,
+        "hasNoContainerWarning": false
+      },
+      {
+        "service": "CloudWatch",
+        "confidence": "medium",
+        "evidence": "CloudWatch monitoring for active compute services",
+        "isReal": true,
+        "hasNoContainerWarning": false
+      }
+    ],
+    "diagramXmlValid": true,
+    "diagramAllServicesNode": true,
+    "diagramMissingServices": [],
+    "totalCostUsd": 38.8,
+    "detectedDb": "none",
+    "rdsCostLabel": "none",
+    "rdsEngineMatches": "N/A",
+    "cftYamlSaved": true,
+    "cftAllServicesPresent": false,
+    "cftMissingServices": [
+      "CloudWatch"
+    ],
+    "issues": []
+  },
+  {
+    "id": 9,
+    "name": "flask-ml-deployment",
+    "url": "https://github.com/HemanthJoseph/ML-Projects-with-Deployment",
+    "engine": "llm",
+    "inferredServices": [
+      "SageMaker (high)",
+      "SQS (high)"
+    ],
+    "serviceIds": [
+      "SageMaker",
+      "SQS"
+    ],
+    "evidenceCitations": [
+      {
+        "service": "SageMaker",
+        "confidence": "high",
+        "evidence": "component Flask Prediction Application (Flask) → Amazon SageMaker (ML training)",
+        "isReal": true,
+        "hasNoContainerWarning": false
+      },
+      {
+        "service": "SQS",
+        "confidence": "high",
+        "evidence": "component bull/bullmq (Bull/BullMQ)",
+        "isReal": true,
+        "hasNoContainerWarning": false
+      }
+    ],
+    "diagramXmlValid": true,
+    "diagramAllServicesNode": true,
+    "diagramMissingServices": [],
+    "totalCostUsd": 4.6000001,
+    "detectedDb": "none",
+    "rdsCostLabel": "none",
+    "rdsEngineMatches": "N/A",
+    "cftYamlSaved": true,
+    "cftAllServicesPresent": true,
+    "cftMissingServices": [],
+    "issues": []
+  },
+  {
+    "id": 10,
+    "name": "django-blog-sqlite",
+    "url": "https://github.com/drisskhattabi6/Django-Blog-Project",
+    "engine": "llm",
+    "inferredServices": [
+      "ECS (low)"
+    ],
+    "serviceIds": [
+      "ECS"
+    ],
+    "evidenceCitations": [
+      {
+        "service": "ECS",
+        "confidence": "low",
+        "evidence": "component Django Blog (Django) (possible container host, no container evidence)",
+        "isReal": false,
+        "hasNoContainerWarning": true
+      }
+    ],
+    "diagramXmlValid": true,
+    "diagramAllServicesNode": true,
+    "diagramMissingServices": [],
+    "totalCostUsd": 29.1456,
+    "detectedDb": "none",
+    "rdsCostLabel": "none",
+    "rdsEngineMatches": "N/A",
+    "cftYamlSaved": true,
+    "cftAllServicesPresent": false,
+    "cftMissingServices": [],
+    "issues": [
+      "ECS inferred with 'no container evidence'"
+    ]
+  }
+]
